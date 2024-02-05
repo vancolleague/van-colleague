@@ -18,7 +18,7 @@ pub enum SharedGetRequest {
 }
 
 #[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-pub enum SharedBLEAction {
+pub enum SharedBLECommand {
     Command {
         device_uuid: Uuid,
         action: device::Action,

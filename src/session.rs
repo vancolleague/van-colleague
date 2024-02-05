@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use bluer::Uuid;
+use bluer::{gatt::local::Service, Uuid};
 use clap::Command;
 use clap::{arg, Arg, ArgAction, ArgMatches};
 use fs2::FileExt;
@@ -21,9 +21,13 @@ use tokio::{
     time::{sleep, Duration},
 };
 
+use crate::ble_server;
+use crate::devices;
 use crate::devices::{get_devices, LocatedDevice};
 use crate::http_server;
+use crate::thread_sharing;
 use crate::thread_sharing::*;
+use device::{Action, Device, DEVICE_TYPES};
 
 const SHUTDOWN_COMMAND: &str = "shutdown";
 //const LISTEN_ADDR: &str = "127.0.0.1:4000"; // Choose an appropriate address and port
@@ -33,7 +37,8 @@ const SHUTDOWN_COMMAND: &str = "shutdown";
 pub struct Session {
     pub ble_stuff: Vec<i32>,
     pub listen_port: u16,
-    pub shutdown_flag: Arc<AtomicBool>,
+    pub shared_get_request: Arc<Mutex<SharedGetRequest>>,
+    pub shared_ble_command: Arc<Mutex<SharedBLECommand>>,
 }
 
 impl Default for Session {
@@ -41,7 +46,8 @@ impl Default for Session {
         Self {
             ble_stuff: Vec::new(),
             listen_port: 4000,
-            shutdown_flag: Arc::new(AtomicBool::new(false)),
+            shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
+            shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),
         }
     }
 }
@@ -51,25 +57,128 @@ impl Session {
         Self {
             ble_stuff: vec![],
             listen_port: 4000,
-            shutdown_flag: Arc::new(AtomicBool::new(false)),
+            shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
+            shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),
         }
     }
 
-    pub async fn run(&mut self) {
+    pub async fn setup(&mut self) -> (ArgMatches, HashMap<Uuid, LocatedDevice>) {
         let command = get_user_args();
+
+        let mut located_devices = HashMap::new();
 
         match command.subcommand() {
             Some(("run", sub_matches)) => {
-                self.start_console_command_sharing();
+                located_devices = self.get_located_devices(&sub_matches).await;
+            }
+            _ => {}
+        }
+
+        (command, located_devices)
+    }
+
+    pub async fn run(
+        &mut self,
+        advertising_uuid: Uuid,
+        command: ArgMatches,
+        mut located_devices: HashMap<Uuid, LocatedDevice>,
+        services: Vec<Service>,
+    ) {
+        match command.subcommand() {
+            Some(("run", sub_matches)) => {
+                let shutdown_flag = Arc::new(AtomicBool::new(false));
+
+                self.start_console_command_sharing(Arc::clone(&shutdown_flag));
 
                 setup_lock_file();
 
-                let located_devices = self.get_located_devices(&sub_matches).await;
-                start_http_server(&located_devices);
+                let shared_request = run_http_server(&located_devices);
 
-                while !self.shutdown_flag.load(Ordering::SeqCst) {
-                    println!("business logic!");
-                    std::thread::sleep(Duration::from_millis(1000));
+                let shared_command = run_ble_server(advertising_uuid, services, &located_devices);
+
+                // business logic
+                let mut last_action = (Uuid::from_u128(0x0), Action::On);
+                while !shutdown_flag.load(Ordering::SeqCst) {
+                    {
+                        use SharedGetRequest::*;
+                        let mut shared_request_lock = shared_request.lock().await;
+                        match &*shared_request_lock {
+                            Command {
+                                ref device_uuid,
+                                ref action,
+                            } => {
+                                if last_action != (device_uuid.clone(), action.clone()) {
+                                    last_action = (device_uuid.clone(), action.clone());
+                                    let located_device = located_devices.get(&device_uuid);
+                                    let target = match action.get_target() {
+                                        Some(t) => t.to_string(),
+                                        None => "".to_string(),
+                                    };
+                                    match located_device {
+                                        Some(d) => {
+                                            let url = format!(
+                                                "http://{}/command?uuid={}&action={}&target={}",
+                                                &d.ip,
+                                                &device_uuid,
+                                                &action.to_str().to_string(),
+                                                &target
+                                            );
+                                            reqwest::get(&url).await.unwrap();
+                                            *shared_request_lock = SharedGetRequest::NoUpdate;
+                                        }
+                                        None => {
+                                            //println!("no device found");
+                                        }
+                                    }
+                                }
+                            }
+                            NoUpdate => {}
+                        }
+                    }
+                    {
+                        use SharedBLECommand::*;
+                        let mut shared_command_lock = shared_command.lock().await;
+                        match &*shared_command_lock {
+                            Command {
+                                ref device_uuid,
+                                ref action,
+                            } => {
+                                let mut already_processed = false;
+                                for (t, _, u) in DEVICE_TYPES.iter() {
+                                    if device_uuid != &Uuid::from_u128(u.clone()) {
+                                        continue;
+                                    }
+                                    for (u, ld) in located_devices.iter_mut() {
+                                        if ld.device.device_type == *t {
+                                            update_device(&ld.ip, &u, &action).await;
+                                            break;
+                                        }
+                                    }
+                                    already_processed = true;
+                                    break;
+                                }
+                                if !already_processed {
+                                    let located_device =
+                                        located_devices.get_mut(&device_uuid).unwrap();
+                                    update_device(&located_device.ip, &device_uuid, &action).await;
+                                }
+                                *shared_command_lock = NoUpdate;
+                            }
+                            TargetInquiry { ref device_uuid } => {
+                                let located_device = located_devices.get(&device_uuid).unwrap();
+                                let device = get_device_status_helper(
+                                    located_device.ip.clone(),
+                                    device_uuid.clone(),
+                                )
+                                .await;
+                                *shared_command_lock = TargetResponse {
+                                    target: device.unwrap().target.clone(),
+                                };
+                            }
+                            TargetResponse { .. } => {}
+                            NoUpdate => {}
+                        }
+                    }
                 }
 
                 println!("Shutdown!!!!!!!!");
@@ -95,15 +204,15 @@ impl Session {
 
     /// Spawn a thread to handle the TCP server that's userd for sending/receiving commands between
     /// console windows
-    fn start_console_command_sharing(&self) {
+    fn start_console_command_sharing(&self, shutdown_flag: Arc<AtomicBool>) {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.listen_port.to_string()))
             .expect("Failed to bind to address");
-        let shutdown_flag_clone = Arc::clone(&self.shutdown_flag);
+        //let shutdown_flag_clone = Arc::clone(&shutdown_flag);
         tokio::spawn(async move {
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
-                        let shutdown_flag_clone = Arc::clone(&shutdown_flag_clone);
+                        let shutdown_flag_clone = Arc::clone(&shutdown_flag);
                         handle_client(stream, shutdown_flag_clone).await;
                     }
                     Err(e) => eprintln!("Connection failed: {}", e),
@@ -123,9 +232,11 @@ impl Session {
             match node_count {
                 Some(nc) => {
                     let nc: usize = nc.parse().unwrap();
-                    while located_devices.len() < nc && !self.shutdown_flag.load(Ordering::SeqCst) {
+                    let mut i = 0;
+                    while located_devices.len() < nc && i < 10 {
                         std::thread::sleep(Duration::from_millis(10000));
                         located_devices = get_devices().await;
+                        i += 1;
                     }
                 }
                 None => {
@@ -142,16 +253,24 @@ impl Session {
 
         located_devices
     }
-
-    pub fn kill(mut self) {
-        while !self.shutdown_flag.load(Ordering::SeqCst) {
-            println!("working");
-            std::thread::sleep(Duration::from_millis(1000));
-        }
-    }
 }
 
-fn start_http_server(
+fn run_ble_server(
+    advertising_uuid: Uuid,
+    services: Vec<Service>,
+    located_devices: &HashMap<Uuid, LocatedDevice>,
+) -> Arc<Mutex<SharedBLECommand>> {
+    let shared_command = Arc::new(Mutex::new(SharedBLECommand::NoUpdate));
+    let shared_command_clone = Arc::clone(&shared_command);
+    let devices = located_devices
+        .iter()
+        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
+        .collect::<Vec<(String, Uuid)>>();
+    tokio::spawn(async move { ble_server::run_ble_server(advertising_uuid, services).await });
+    shared_command
+}
+
+fn run_http_server(
     located_devices: &HashMap<Uuid, LocatedDevice>,
 ) -> Arc<Mutex<SharedGetRequest>> {
     // Start the http server with the appropreate info passed in
@@ -170,6 +289,28 @@ fn start_http_server(
     });
     println!("Http server started");
     shared_request
+}
+
+async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
+    let target = match action.get_target() {
+        Some(t) => t.to_string(),
+        None => "".to_string(),
+    };
+
+    let url = format!(
+        "http://{}/command?uuid={}&action={}&target={}",
+        &ip,
+        &uuid.to_string(),
+        &action.to_str().to_string(),
+        &target,
+    );
+    dbg!(&url);
+    reqwest::get(&url).await.unwrap();
+}
+
+/// Needed so that the ip and uuid are owned and thus not dropped
+async fn get_device_status_helper(ip: String, uuid: Uuid) -> Result<Device, String> {
+    devices::get_device_status(&ip, &uuid).await
 }
 
 async fn handle_client(mut stream: TcpStream, shutdown_flag: Arc<AtomicBool>) {
