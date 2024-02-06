@@ -63,18 +63,16 @@ impl Session {
     }
 
     pub async fn setup(&mut self) -> (ArgMatches, HashMap<Uuid, LocatedDevice>) {
-        let command = get_user_args();
+        let cli_command = get_user_args();
 
-        let mut located_devices = HashMap::new();
-
-        match command.subcommand() {
+        let located_devices = match cli_command.subcommand() {
             Some(("run", sub_matches)) => {
-                located_devices = self.get_located_devices(&sub_matches).await;
+                self.get_located_devices(&sub_matches).await
             }
-            _ => {}
-        }
+            _ => HashMap::new()
+        };
 
-        (command, located_devices)
+        (cli_command, located_devices)
     }
 
     pub async fn run(
@@ -207,7 +205,6 @@ impl Session {
     fn start_console_command_sharing(&self, shutdown_flag: Arc<AtomicBool>) {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.listen_port.to_string()))
             .expect("Failed to bind to address");
-        //let shutdown_flag_clone = Arc::clone(&shutdown_flag);
         tokio::spawn(async move {
             for stream in listener.incoming() {
                 match stream {
@@ -353,7 +350,7 @@ fn setup_lock_file() {
     }
 }
 
-fn get_user_args() -> ArgMatches {
+pub fn get_user_args() -> ArgMatches {
     Command::new("Hub")
         .version("0.1")
         .author("Chad DeRosier, <chad.derosier@tutanota.com>")

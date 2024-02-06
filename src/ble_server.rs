@@ -72,7 +72,7 @@ pub async fn run_ble_server(
     sleep(Duration::from_secs(1)).await;
 }
 
-pub fn slider_read_write_service(
+pub fn slider_service(
     service_uuid: Uuid,
     shared_command: Arc<Mutex<SharedBLECommand>>,
 ) -> Service {
@@ -133,7 +133,7 @@ pub fn slider_read_write_service(
     }
 }
 
-pub fn voice_command_service(
+pub fn voice_service(
     service_uuid: Uuid,
     shared_command: Arc<Mutex<SharedBLECommand>>,
     located_devices: HashMap<Uuid, LocatedDevice>,
