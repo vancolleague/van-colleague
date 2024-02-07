@@ -1,6 +1,10 @@
 //! Serves a Bluetooth GATT application using the callback programming model.
 use std::str::FromStr;
-use std::{collections::{BTreeMap, HashMap}, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 
 use bluer::{
     adv::Advertisement,
@@ -55,7 +59,7 @@ pub async fn run_ble_server(
         adapter.name()
     );
     let app = Application {
-        services: services, 
+        services: services,
         ..Default::default()
     };
 
@@ -72,10 +76,7 @@ pub async fn run_ble_server(
     sleep(Duration::from_secs(1)).await;
 }
 
-pub fn slider_service(
-    service_uuid: Uuid,
-    shared_command: Arc<Mutex<SharedBLECommand>>,
-) -> Service {
+pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECommand>>) -> Service {
     let shared_command_read = Arc::clone(&shared_command);
     let shared_command_write = Arc::clone(&shared_command);
     let set_uuid: Uuid = Action::Set { target: 0 }.to_uuid();

@@ -66,10 +66,8 @@ impl Session {
         let cli_command = get_user_args();
 
         let located_devices = match cli_command.subcommand() {
-            Some(("run", sub_matches)) => {
-                self.get_located_devices(&sub_matches).await
-            }
-            _ => HashMap::new()
+            Some(("run", sub_matches)) => self.get_located_devices(&sub_matches).await,
+            _ => HashMap::new(),
         };
 
         (cli_command, located_devices)
@@ -93,6 +91,14 @@ impl Session {
                 let shared_request = run_http_server(&located_devices);
 
                 let shared_command = run_ble_server(advertising_uuid, services, &located_devices);
+
+                let ip = self.listen_port.to_string();
+                tokio::spawn(async move {
+                    tokio::signal::ctrl_c().await.unwrap();
+                    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", ip)).unwrap();
+                    stream.write_all(SHUTDOWN_COMMAND.as_bytes()).unwrap();
+                    process::exit(0);
+                });
 
                 // business logic
                 let mut last_action = (Uuid::from_u128(0x0), Action::On);
@@ -267,9 +273,7 @@ fn run_ble_server(
     shared_command
 }
 
-fn run_http_server(
-    located_devices: &HashMap<Uuid, LocatedDevice>,
-) -> Arc<Mutex<SharedGetRequest>> {
+fn run_http_server(located_devices: &HashMap<Uuid, LocatedDevice>) -> Arc<Mutex<SharedGetRequest>> {
     // Start the http server with the appropreate info passed in
     let shared_request = Arc::new(Mutex::new(SharedGetRequest::NoUpdate));
     let shared_config = Arc::new(Mutex::new(SharedConfig {
