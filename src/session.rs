@@ -88,9 +88,9 @@ impl Session {
 
                 setup_lock_file();
 
-                let shared_request = run_http_server(&located_devices);
+                self.run_http_server(&located_devices);
 
-                let shared_command = run_ble_server(advertising_uuid, services, &located_devices);
+                run_ble_server(advertising_uuid, services, &located_devices);
 
                 let ip = self.listen_port.to_string();
                 tokio::spawn(async move {
@@ -105,7 +105,7 @@ impl Session {
                 while !shutdown_flag.load(Ordering::SeqCst) {
                     {
                         use SharedGetRequest::*;
-                        let mut shared_request_lock = shared_request.lock().await;
+                        let mut shared_request_lock = self.shared_get_request.lock().await;
                         match &*shared_request_lock {
                             Command {
                                 ref device_uuid,
@@ -141,7 +141,7 @@ impl Session {
                     }
                     {
                         use SharedBLECommand::*;
-                        let mut shared_command_lock = shared_command.lock().await;
+                        let mut shared_command_lock = self.shared_ble_command.lock().await;
                         match &*shared_command_lock {
                             Command {
                                 ref device_uuid,
@@ -175,6 +175,7 @@ impl Session {
                                     device_uuid.clone(),
                                 )
                                 .await;
+                                println!("response: {:?}, {:?}", &device_uuid, &device);
                                 *shared_command_lock = TargetResponse {
                                     target: device.unwrap().target.clone(),
                                 };
@@ -256,31 +257,14 @@ impl Session {
 
         located_devices
     }
-}
 
-fn run_ble_server(
-    advertising_uuid: Uuid,
-    services: Vec<Service>,
-    located_devices: &HashMap<Uuid, LocatedDevice>,
-) -> Arc<Mutex<SharedBLECommand>> {
-    let shared_command = Arc::new(Mutex::new(SharedBLECommand::NoUpdate));
-    let shared_command_clone = Arc::clone(&shared_command);
-    let devices = located_devices
-        .iter()
-        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
-        .collect::<Vec<(String, Uuid)>>();
-    tokio::spawn(async move { ble_server::run_ble_server(advertising_uuid, services).await });
-    shared_command
-}
-
-fn run_http_server(located_devices: &HashMap<Uuid, LocatedDevice>) -> Arc<Mutex<SharedGetRequest>> {
+    fn run_http_server(&self, located_devices: &HashMap<Uuid, LocatedDevice>) { 
     // Start the http server with the appropreate info passed in
-    let shared_request = Arc::new(Mutex::new(SharedGetRequest::NoUpdate));
     let shared_config = Arc::new(Mutex::new(SharedConfig {
         verbosity: "none".to_string(),
     }));
     let shared_config_clone = shared_config.clone();
-    let shared_request_clone = shared_request.clone();
+    let shared_request_clone = Arc::clone(&self.shared_get_request);
     let devices = located_devices
         .iter()
         .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
@@ -289,7 +273,19 @@ fn run_http_server(located_devices: &HashMap<Uuid, LocatedDevice>) -> Arc<Mutex<
         http_server::run_http_server(shared_config_clone, shared_request_clone, devices).await
     });
     println!("Http server started");
-    shared_request
+}
+}
+
+fn run_ble_server(
+    advertising_uuid: Uuid,
+    services: Vec<Service>,
+    located_devices: &HashMap<Uuid, LocatedDevice>,
+) { 
+    let devices = located_devices
+        .iter()
+        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
+        .collect::<Vec<(String, Uuid)>>();
+    tokio::spawn(async move { ble_server::run_ble_server(advertising_uuid, services).await });
 }
 
 async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
@@ -305,7 +301,6 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
         &action.to_str().to_string(),
         &target,
     );
-    dbg!(&url);
     reqwest::get(&url).await.unwrap();
 }
 

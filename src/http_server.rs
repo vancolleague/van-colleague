@@ -92,7 +92,6 @@ async fn command(
         None => return HttpResponse::Ok().body("Oops, we didn't get the command"),
     };
 
-    dbg!(&info);
     let mut device = String::new();
     let command = command.replace("%20", " ").to_lowercase();
     let mut command = command.split_whitespace();

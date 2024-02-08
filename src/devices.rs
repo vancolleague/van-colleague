@@ -55,7 +55,6 @@ pub async fn get_devices() -> HashMap<Uuid, LocatedDevice> {
 /// - 'uuid': the uuid of the device
 pub async fn get_device_status(ip: &String, uuid: &Uuid) -> Result<Device, String> {
     let url = format!("http://{}/status?uuid={}", ip, uuid.to_string());
-    dbg!(&url);
     let device_text = match reqwest::get(&url).await {
         Ok(response) => match response.text().await {
             Ok(maybe_device_text) => maybe_device_text,
@@ -63,7 +62,6 @@ pub async fn get_device_status(ip: &String, uuid: &Uuid) -> Result<Device, Strin
         },
         Err(_) => return Err("No response or something in get_device_status".to_string()),
     };
-    dbg!(&device_text);
 
     match Device::from_json(&device_text) {
         Ok(d) => Ok(d),
@@ -73,7 +71,6 @@ pub async fn get_device_status(ip: &String, uuid: &Uuid) -> Result<Device, Strin
 
 async fn get_node_devices(ip: String) -> Option<HashMap<Uuid, LocatedDevice>> {
     let url = format!("http://{}/devices", ip);
-    dbg!(&url);
     let device_text = match reqwest::get(&url).await {
         Ok(response) => match response.text().await {
             Ok(maybe_device_text) => maybe_device_text,
