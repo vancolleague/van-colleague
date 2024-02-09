@@ -2,6 +2,8 @@
 use std::str::FromStr;
 use std::{
     collections::{BTreeMap, HashMap},
+    iter::Peekable,
+    slice::Iter,
     sync::Arc,
     time::Duration,
 };
@@ -21,7 +23,7 @@ use tokio::{
     time::sleep,
 };
 
-use device::{Action, Device, DeviceType};
+use device::{Action, Device, DeviceType, DEVICE_TYPES};
 
 use crate::devices::LocatedDevice;
 use crate::thread_sharing::*;
@@ -29,11 +31,7 @@ use crate::thread_sharing::*;
 #[allow(dead_code)]
 const MANUFACTURER_ID: u16 = 0x45F1;
 
-pub async fn run_ble_server(
-    //    shared_action: Arc<Mutex<SharedBLECommand>>,
-    advertising_uuid: Uuid,
-    services: Vec<Service>,
-) {
+pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
     let session = bluer::Session::new().await.unwrap();
     let adapter = session.default_adapter().await.unwrap();
     adapter.set_powered(true).await.unwrap();
@@ -140,7 +138,7 @@ pub fn voice_service(
     located_devices: HashMap<Uuid, LocatedDevice>,
 ) -> Service {
     let set_uuid: Uuid = Action::Set { target: 0 }.to_uuid();
-    let devices = located_devices
+    let mut devices = located_devices
         .iter()
         .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
         .collect::<Vec<(String, Uuid)>>();
@@ -153,8 +151,16 @@ pub fn voice_service(
                 write: true,
                 write_without_response: true,
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, req| {
-                    println!("voice recieved");
+                    println!("voice received");
                     let shared_command_clone = Arc::clone(&shared_command);
+                    let located_devices_clone = located_devices
+                        .iter()
+                        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
+                        .collect::<Vec<(String, Uuid)>>();
+                    let device_types_clone = DEVICE_TYPES
+                        .iter()
+                        .map(|(_, n, u)| (n.to_string(), Uuid::from_u128(u.clone())))
+                        .collect::<Vec<(String, Uuid)>>();
                     let devices_clone = devices.clone();
                     async move {
                         let command = std::str::from_utf8(&new_value).unwrap();
@@ -162,46 +168,28 @@ pub fn voice_service(
                         let command = command.trim_end();
                         let command = command.trim_end_matches('\0');
                         let command = command.split_whitespace().collect::<Vec<&str>>();
-                        let mut command = command.iter();
-                        let mut device = String::new();
+                        let mut command_iter = command.iter().peekable();
 
-                        while !devices_clone
-                            .clone()
-                            .iter()
-                            .map(|(n, _)| n)
-                            .collect::<Vec<&String>>()
-                            .contains(&&device)
-                        {
-                            let word = match command.next() {
-                                Some(w) => w,
-                                None => {
-                                    panic!("Didn't get the device name");
-                                }
-                            };
+                        let mut device_uuid =
+                            get_device_name(device_types_clone, &mut command_iter);
+                        if device_uuid.is_none() {
+                            command_iter = command.iter().peekable();
+                            device_uuid = get_device_name(located_devices_clone, &mut command_iter);
+                        }
+                        if device_uuid.is_none() {
+                            panic!("Didn't get a device");
+                        }
+                        let (device, uuid) = device_uuid.unwrap();
 
-                            if device.is_empty() {
-                                device = word.to_string();
-                            } else {
-                                device = format!("{} {}", &device, &word);
-                            }
-                        }
-                        let mut uuid = Uuid::from_u128(0x0);
-                        for (n, u) in devices_clone.iter() {
-                            if &device == n {
-                                uuid = u.clone();
-                                break;
-                            }
-                        }
                         if uuid.as_u128() == 0x0 {
                             panic!("didn't get the device id");
                         }
-
-                        let action = match command.next() {
+                        let action = match command_iter.next() {
                             Some(&"at") => "set",
                             Some(a) => a,
                             None => panic!("failed to get an action"), //return HttpResponse::Ok().body("Oops, we didn't get an action!"),
                         };
-                        let target = match command.next() {
+                        let target = match command_iter.next() {
                             Some(t) => {
                                 if t.is_empty() {
                                     None
@@ -247,7 +235,6 @@ pub fn voice_service(
                                 panic!("Issue creating the action");
                             }
                         };
-
                         {
                             let mut shared_command_guard = shared_command_clone.lock().await;
                             *shared_command_guard = SharedBLECommand::Command {
@@ -282,4 +269,42 @@ async fn await_for_inquiry_response(shared_action: Arc<Mutex<SharedBLECommand>>)
             }
         }
     }
+}
+
+fn get_device_name(
+    name_list: Vec<(String, Uuid)>,
+    command_words: &mut Peekable<Iter<'_, &str>>,
+) -> Option<(String, Uuid)> {
+    let mut device_name = command_words.next().unwrap().to_string();
+    let mut next_word = command_words.peek();
+
+    let mut names = Vec::new();
+    let mut uuids = Vec::new();
+    for (n, u) in name_list.iter() {
+        names.push(n);
+        uuids.push(u);
+    }
+
+    let mut found_name = "".to_string();
+    while next_word.is_some() {
+        if names.contains(&&device_name.to_string()) {
+            found_name = device_name.to_string();
+            break;
+        }
+        device_name = format!("{} {}", device_name, next_word.unwrap());
+        command_words.next();
+        next_word = command_words.peek();
+    }
+
+    if found_name == "".to_string() {
+        return None;
+    }
+
+    for (n, u) in name_list {
+        if n == found_name {
+            return Some((found_name, u.clone()));
+        }
+    }
+
+    None
 }

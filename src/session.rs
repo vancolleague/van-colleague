@@ -30,9 +30,6 @@ use crate::thread_sharing::*;
 use device::{Action, Device, DEVICE_TYPES};
 
 const SHUTDOWN_COMMAND: &str = "shutdown";
-//const LISTEN_ADDR: &str = "127.0.0.1:4000"; // Choose an appropriate address and port
-
-// Flag when the stream consists of the shutdown command
 
 pub struct Session {
     pub ble_stuff: Vec<i32>,
@@ -92,10 +89,10 @@ impl Session {
 
                 run_ble_server(advertising_uuid, services, &located_devices);
 
-                let ip = self.listen_port.to_string();
+                let port = self.listen_port.to_string();
                 tokio::spawn(async move {
                     tokio::signal::ctrl_c().await.unwrap();
-                    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", ip)).unwrap();
+                    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
                     stream.write_all(SHUTDOWN_COMMAND.as_bytes()).unwrap();
                     process::exit(0);
                 });
@@ -155,7 +152,6 @@ impl Session {
                                     for (u, ld) in located_devices.iter_mut() {
                                         if ld.device.device_type == *t {
                                             update_device(&ld.ip, &u, &action).await;
-                                            break;
                                         }
                                     }
                                     already_processed = true;
@@ -258,29 +254,29 @@ impl Session {
         located_devices
     }
 
-    fn run_http_server(&self, located_devices: &HashMap<Uuid, LocatedDevice>) { 
-    // Start the http server with the appropreate info passed in
-    let shared_config = Arc::new(Mutex::new(SharedConfig {
-        verbosity: "none".to_string(),
-    }));
-    let shared_config_clone = shared_config.clone();
-    let shared_request_clone = Arc::clone(&self.shared_get_request);
-    let devices = located_devices
-        .iter()
-        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
-        .collect::<Vec<(String, Uuid)>>();
-    tokio::spawn(async move {
-        http_server::run_http_server(shared_config_clone, shared_request_clone, devices).await
-    });
-    println!("Http server started");
-}
+    fn run_http_server(&self, located_devices: &HashMap<Uuid, LocatedDevice>) {
+        // Start the http server with the appropreate info passed in
+        let shared_config = Arc::new(Mutex::new(SharedConfig {
+            verbosity: "none".to_string(),
+        }));
+        let shared_config_clone = shared_config.clone();
+        let shared_request_clone = Arc::clone(&self.shared_get_request);
+        let devices = located_devices
+            .iter()
+            .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
+            .collect::<Vec<(String, Uuid)>>();
+        tokio::spawn(async move {
+            http_server::run_http_server(shared_config_clone, shared_request_clone, devices).await
+        });
+        println!("Http server started");
+    }
 }
 
 fn run_ble_server(
     advertising_uuid: Uuid,
     services: Vec<Service>,
     located_devices: &HashMap<Uuid, LocatedDevice>,
-) { 
+) {
     let devices = located_devices
         .iter()
         .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
