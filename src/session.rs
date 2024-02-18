@@ -4,28 +4,23 @@ use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
 
 use bluer::{gatt::local::Service, Uuid};
 use clap::Command;
-use clap::{arg, Arg, ArgAction, ArgMatches};
+use clap::{Arg, ArgMatches};
 use fs2::FileExt;
 use tokio::{
-    main, spawn,
-    sync::{mpsc, Mutex},
-    task,
-    time::{sleep, Duration},
+    sync::Mutex,
+    time::Duration,
 };
 
 use crate::ble_server;
 use crate::devices;
 use crate::devices::{get_devices, LocatedDevice};
 use crate::http_server;
-use crate::thread_sharing;
 use crate::thread_sharing::*;
 use device::{Action, Device, DEVICE_TYPES};
 
@@ -78,7 +73,7 @@ impl Session {
         services: Vec<Service>,
     ) {
         match command.subcommand() {
-            Some(("run", sub_matches)) => {
+            Some(("run", _sub_matches)) => {
                 let shutdown_flag = Arc::new(AtomicBool::new(false));
 
                 self.start_console_command_sharing(Arc::clone(&shutdown_flag));
@@ -87,7 +82,7 @@ impl Session {
 
                 self.run_http_server(&located_devices);
 
-                run_ble_server(advertising_uuid, services, &located_devices);
+                run_ble_server(advertising_uuid, services);
 
                 let port = self.listen_port.to_string();
                 tokio::spawn(async move {
@@ -111,13 +106,13 @@ impl Session {
                                 if last_action != (device_uuid.clone(), action.clone()) {
                                     last_action = (device_uuid.clone(), action.clone());
                                     let located_device = located_devices.get(&device_uuid);
-                                    let target = match action.get_target() {
+                                    let _target = match action.get_target() {
                                         Some(t) => t.to_string(),
                                         None => "".to_string(),
                                     };
                                     match located_device {
                                         Some(d) => {
-                                            update_device(&d.ip, &device_uuid, &action);
+                                            let _ = update_device(&d.ip, &device_uuid, &action);
                                             *shared_request_lock = SharedGetRequest::NoUpdate;
                                         }
                                         None => {
@@ -268,12 +263,7 @@ impl Session {
 fn run_ble_server(
     advertising_uuid: Uuid,
     services: Vec<Service>,
-    located_devices: &HashMap<Uuid, LocatedDevice>,
 ) {
-    let devices = located_devices
-        .iter()
-        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
-        .collect::<Vec<(String, Uuid)>>();
     tokio::spawn(async move { ble_server::run_ble_server(advertising_uuid, services).await });
 }
 

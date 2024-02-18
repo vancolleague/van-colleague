@@ -1,5 +1,4 @@
 //! Serves a Bluetooth GATT application using the callback programming model.
-use std::str::FromStr;
 use std::{
     collections::{BTreeMap, HashMap},
     iter::Peekable,
@@ -11,7 +10,7 @@ use std::{
 use bluer::{
     adv::Advertisement,
     gatt::local::{
-        Application, Characteristic, CharacteristicNotify, CharacteristicNotifyMethod,
+        Application, Characteristic,
         CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, Service,
     },
     Uuid,
@@ -19,11 +18,11 @@ use bluer::{
 use futures::FutureExt;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
-    sync::{mpsc, Mutex},
+    sync::Mutex,
     time::sleep,
 };
 
-use device::{Action, Device, DeviceType, DEVICE_TYPES};
+use device::{Action, DEVICE_TYPES};
 
 use crate::devices::LocatedDevice;
 use crate::thread_sharing::*;
@@ -85,7 +84,7 @@ pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECom
             uuid: set_uuid,
             read: Some(CharacteristicRead {
                 read: true,
-                fun: Box::new(move |req| {
+                fun: Box::new(move |_req| {
                     let shared_command_read_clone = shared_command_read.clone();
                     async move {
                         {
@@ -106,7 +105,7 @@ pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECom
             write: Some(CharacteristicWrite {
                 write: true,
                 write_without_response: true,
-                method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, req| {
+                method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     let shared_command_write_clone = shared_command_write.clone();
                     async move {
                         let text = std::str::from_utf8(&new_value).unwrap();
@@ -138,10 +137,6 @@ pub fn voice_service(
     located_devices: HashMap<Uuid, LocatedDevice>,
 ) -> Service {
     let set_uuid: Uuid = Action::Set { target: 0 }.to_uuid();
-    let mut devices = located_devices
-        .iter()
-        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
-        .collect::<Vec<(String, Uuid)>>();
     Service {
         uuid: service_uuid,
         primary: true,
@@ -150,7 +145,7 @@ pub fn voice_service(
             write: Some(CharacteristicWrite {
                 write: true,
                 write_without_response: true,
-                method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, req| {
+                method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     println!("voice received");
                     let shared_command_clone = Arc::clone(&shared_command);
                     let located_devices_clone = located_devices
@@ -161,7 +156,6 @@ pub fn voice_service(
                         .iter()
                         .map(|(_, n, u)| (n.to_string(), Uuid::from_u128(u.clone())))
                         .collect::<Vec<(String, Uuid)>>();
-                    let devices_clone = devices.clone();
                     async move {
                         let command = std::str::from_utf8(&new_value).unwrap();
                         let command = command.to_lowercase();
@@ -179,7 +173,7 @@ pub fn voice_service(
                         if device_uuid.is_none() {
                             panic!("Didn't get a device");
                         }
-                        let (device, uuid) = device_uuid.unwrap();
+                        let (_device, uuid) = device_uuid.unwrap();
 
                         if uuid.as_u128() == 0x0 {
                             panic!("didn't get the device id");

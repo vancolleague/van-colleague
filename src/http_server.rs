@@ -3,11 +3,9 @@ use std::sync::Arc;
 
 use actix_web::{middleware, web, App, HttpRequest, HttpResponse, HttpServer};
 use bluer::Uuid;
-use tokio::{main, spawn, sync::Mutex};
+use tokio::sync::Mutex;
 
-use device::{Action, Device};
-//mod crate::shared_request;
-//use crate::devices::DEVICES;
+use device::Action;
 use crate::thread_sharing::{SharedConfig, SharedGetRequest};
 
 async fn index(
