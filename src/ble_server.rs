@@ -89,9 +89,9 @@ pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECom
                     let shared_command_read_clone = shared_command_read.clone();
                     async move {
                         {
-                            let mut shared_command_read_guarg =
+                            let mut shared_command_read_guard =
                                 shared_command_read_clone.lock().await;
-                            *shared_command_read_guarg = SharedBLECommand::TargetInquiry {
+                            *shared_command_read_guard = SharedBLECommand::TargetInquiry {
                                 device_uuid: service_uuid,
                             };
                         }
@@ -113,9 +113,9 @@ pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECom
                         let target: usize =
                             text.chars().take(1).collect::<String>().parse().unwrap();
                         {
-                            let mut shared_command_write_guarg =
+                            let mut shared_command_write_guard =
                                 shared_command_write_clone.lock().await;
-                            *shared_command_write_guarg = SharedBLECommand::Command {
+                            *shared_command_write_guard = SharedBLECommand::Command {
                                 device_uuid: service_uuid,
                                 action: Action::Set { target: target },
                             };

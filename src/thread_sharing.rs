@@ -31,20 +31,3 @@ pub enum SharedBLECommand {
     },
     NoUpdate,
 }
-/*
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum SharedKitchenLight {
-    Command {
-        device: Uuid,
-        action: device::Action
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum SharedBedroomLight {
-    Command {
-        device: Uuid,
-        action: device::Action
-    },
-    TargetInquiry,
-}*/

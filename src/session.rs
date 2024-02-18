@@ -101,10 +101,10 @@ impl Session {
                 let mut last_action = (Uuid::from_u128(0x0), Action::On);
                 while !shutdown_flag.load(Ordering::SeqCst) {
                     {
-                        use SharedGetRequest::*;
+                        use SharedGetRequest as SGR;
                         let mut shared_request_lock = self.shared_get_request.lock().await;
                         match &*shared_request_lock {
-                            Command {
+                            SGR::Command {
                                 ref device_uuid,
                                 ref action,
                             } => {
@@ -117,14 +117,7 @@ impl Session {
                                     };
                                     match located_device {
                                         Some(d) => {
-                                            let url = format!(
-                                                "http://{}/command?uuid={}&action={}&target={}",
-                                                &d.ip,
-                                                &device_uuid,
-                                                &action.to_str().to_string(),
-                                                &target
-                                            );
-                                            reqwest::get(&url).await.unwrap();
+                                            update_device(&d.ip, &device_uuid, &action);
                                             *shared_request_lock = SharedGetRequest::NoUpdate;
                                         }
                                         None => {
@@ -133,14 +126,14 @@ impl Session {
                                     }
                                 }
                             }
-                            NoUpdate => {}
+                            SGR::NoUpdate => {}
                         }
                     }
                     {
-                        use SharedBLECommand::*;
+                        use SharedBLECommand as SBC;
                         let mut shared_command_lock = self.shared_ble_command.lock().await;
                         match &*shared_command_lock {
-                            Command {
+                            SBC::Command {
                                 ref device_uuid,
                                 ref action,
                             } => {
@@ -162,9 +155,9 @@ impl Session {
                                         located_devices.get_mut(&device_uuid).unwrap();
                                     update_device(&located_device.ip, &device_uuid, &action).await;
                                 }
-                                *shared_command_lock = NoUpdate;
+                                *shared_command_lock = SBC::NoUpdate;
                             }
-                            TargetInquiry { ref device_uuid } => {
+                            SBC::TargetInquiry { ref device_uuid } => {
                                 let located_device = located_devices.get(&device_uuid).unwrap();
                                 let device = get_device_status_helper(
                                     located_device.ip.clone(),
@@ -172,12 +165,12 @@ impl Session {
                                 )
                                 .await;
                                 println!("response: {:?}, {:?}", &device_uuid, &device);
-                                *shared_command_lock = TargetResponse {
+                                *shared_command_lock = SBC::TargetResponse {
                                     target: device.unwrap().target.clone(),
                                 };
                             }
-                            TargetResponse { .. } => {}
-                            NoUpdate => {}
+                            SBC::TargetResponse { .. } => {}
+                            SBC::NoUpdate => {}
                         }
                     }
                 }
@@ -285,7 +278,7 @@ fn run_ble_server(
 }
 
 async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
-    let target = match action.get_target() {
+    let target = match action.get_target_or_amount() {
         Some(t) => t.to_string(),
         None => "".to_string(),
     };
@@ -297,6 +290,7 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
         &action.to_str().to_string(),
         &target,
     );
+    println!("{}", &url);
     reqwest::get(&url).await.unwrap();
 }
 
