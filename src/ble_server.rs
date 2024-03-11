@@ -22,7 +22,7 @@ use tokio::{
     time::sleep,
 };
 
-use device::{Action, DEVICE_TYPES};
+use device::{Action, DEVICE_GROUPS};
 
 use crate::devices::LocatedDevice;
 use crate::thread_sharing::*;
@@ -35,11 +35,11 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
     let adapter = session.default_adapter().await.unwrap();
     adapter.set_powered(true).await.unwrap();
 
-    println!(
+    /*println!(
         "Advertising on Bluetooth adapter {} with address {}",
         adapter.name(),
         adapter.address().await.unwrap()
-    );
+    );*/
     let mut manufacturer_data = BTreeMap::new();
     manufacturer_data.insert(MANUFACTURER_ID, vec![0x21, 0x22, 0x23, 0x24]);
     let le_advertisement = Advertisement {
@@ -76,7 +76,7 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
 pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECommand>>) -> Service {
     let shared_command_read = Arc::clone(&shared_command);
     let shared_command_write = Arc::clone(&shared_command);
-    let set_uuid: Uuid = Action::Set { target: 0 }.to_uuid();
+    let set_uuid: Uuid = Action::Set(0).to_uuid();
     Service {
         uuid: service_uuid,
         primary: true,
@@ -116,7 +116,7 @@ pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECom
                                 shared_command_write_clone.lock().await;
                             *shared_command_write_guard = SharedBLECommand::Command {
                                 device_uuid: service_uuid,
-                                action: Action::Set { target: target },
+                                action: Action::Set(target),
                             };
                         }
                         Ok(())
@@ -136,7 +136,7 @@ pub fn voice_service(
     shared_command: Arc<Mutex<SharedBLECommand>>,
     located_devices: HashMap<Uuid, LocatedDevice>,
 ) -> Service {
-    let set_uuid: Uuid = Action::Set { target: 0 }.to_uuid();
+    let set_uuid: Uuid = Action::Set(0).to_uuid();
     Service {
         uuid: service_uuid,
         primary: true,
@@ -152,9 +152,9 @@ pub fn voice_service(
                         .iter()
                         .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
                         .collect::<Vec<(String, Uuid)>>();
-                    let device_types_clone = DEVICE_TYPES
+                    let device_groups_clone = DEVICE_GROUPS
                         .iter()
-                        .map(|(_, n, u)| (n.to_string(), Uuid::from_u128(u.clone())))
+                        .map(|ds| (ds.name.to_string(), Uuid::from_u128(ds.uuid_number.clone())))
                         .collect::<Vec<(String, Uuid)>>();
                     async move {
                         let command = std::str::from_utf8(&new_value).unwrap();
@@ -165,7 +165,7 @@ pub fn voice_service(
                         let mut command_iter = command.iter().peekable();
 
                         let mut device_uuid =
-                            get_device_name(device_types_clone, &mut command_iter);
+                            get_device_name(device_groups_clone, &mut command_iter);
                         if device_uuid.is_none() {
                             command_iter = command.iter().peekable();
                             device_uuid = get_device_name(located_devices_clone, &mut command_iter);

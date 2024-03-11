@@ -98,7 +98,7 @@ async fn get_node_devices(ip: String) -> Option<HashMap<Uuid, LocatedDevice>> {
 fn run_nmap() -> String {
     let output = Command::new("nmap")
         .arg("-sn")
-        .arg("192.168.1.0/24")
+        .arg("192.168.2.0/24")
         .output()
         .expect("Failed to execute command");
 

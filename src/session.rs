@@ -22,7 +22,7 @@ use crate::devices;
 use crate::devices::{get_devices, LocatedDevice};
 use crate::http_server;
 use crate::thread_sharing::*;
-use device::{Action, Device, DEVICE_TYPES};
+use device::{Action, Device, DEVICE_GROUPS};
 
 const SHUTDOWN_COMMAND: &str = "shutdown";
 
@@ -106,7 +106,7 @@ impl Session {
                                 if last_action != (device_uuid.clone(), action.clone()) {
                                     last_action = (device_uuid.clone(), action.clone());
                                     let located_device = located_devices.get(&device_uuid);
-                                    let _target = match action.get_target() {
+                                    let _target = match action.get_value() {
                                         Some(t) => t.to_string(),
                                         None => "".to_string(),
                                     };
@@ -133,12 +133,12 @@ impl Session {
                                 ref action,
                             } => {
                                 let mut already_processed = false;
-                                for (t, _, u) in DEVICE_TYPES.iter() {
-                                    if device_uuid != &Uuid::from_u128(u.clone()) {
+                                for ds in DEVICE_GROUPS.iter() {
+                                    if device_uuid != &Uuid::from_u128(ds.uuid_number.clone()) {
                                         continue;
                                     }
                                     for (u, ld) in located_devices.iter_mut() {
-                                        if ld.device.device_type == *t {
+                                        if ld.device.device_group == Some(ds.device_group) {
                                             update_device(&ld.ip, &u, &action).await;
                                         }
                                     }
@@ -161,7 +161,7 @@ impl Session {
                                 .await;
                                 println!("response: {:?}, {:?}", &device_uuid, &device);
                                 *shared_command_lock = SBC::TargetResponse {
-                                    target: device.unwrap().target.clone(),
+                                    target: device.unwrap().get_target(),
                                 };
                             }
                             SBC::TargetResponse { .. } => {}
@@ -268,7 +268,7 @@ fn run_ble_server(
 }
 
 async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
-    let target = match action.get_target_or_amount() {
+    let target = match action.get_value() {
         Some(t) => t.to_string(),
         None => "".to_string(),
     };
