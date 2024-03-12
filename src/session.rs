@@ -24,7 +24,9 @@ use crate::http_server;
 use crate::thread_sharing::*;
 use device::{Action, Device, DEVICE_GROUPS};
 
+const RUN_COMMAND: &str = "run";
 const SHUTDOWN_COMMAND: &str = "shutdown";
+const STATUS_COMMAND: &str = "status";
 
 pub struct Session {
     pub ble_stuff: Vec<i32>,
@@ -58,7 +60,7 @@ impl Session {
         let cli_command = get_user_args();
 
         let located_devices = match cli_command.subcommand() {
-            Some(("run", sub_matches)) => self.get_located_devices(&sub_matches).await,
+            Some((RUN_COMMAND, sub_matches)) => self.get_located_devices(&sub_matches).await,
             _ => HashMap::new(),
         };
 
@@ -73,7 +75,7 @@ impl Session {
         services: Vec<Service>,
     ) {
         match command.subcommand() {
-            Some(("run", _sub_matches)) => {
+            Some((RUN_COMMAND, _sub_matches)) => {
                 let shutdown_flag = Arc::new(AtomicBool::new(false));
 
                 self.start_console_command_sharing(Arc::clone(&shutdown_flag));
@@ -180,6 +182,19 @@ impl Session {
                         .unwrap();
                 stream.write_all(SHUTDOWN_COMMAND.as_bytes()).unwrap();
                 process::exit(0);
+            }
+            Some((STATUS_COMMAND, _sub_matches)) => {
+                println!("Getting status...");
+                match TcpStream::connect(format!("127.0.0.1:{}", self.listen_port.to_string())) {
+                    Ok(mut stream) => {
+                        println!("    Running");
+                        stream.write_all(STATUS_COMMAND.as_bytes()).unwrap();
+                        process::exit(0);
+                    }
+                    Err(e) => {
+                        println!("    Not running");
+                    }
+                }
             }
             _ => {
                 println!("You must enter a command, perhapse you wanted:");
@@ -294,8 +309,19 @@ async fn handle_client(mut stream: TcpStream, shutdown_flag: Arc<AtomicBool>) {
     match stream.read(&mut buffer) {
         Ok(size) => {
             let received = String::from_utf8_lossy(&buffer[..size]);
-            if received.trim() == SHUTDOWN_COMMAND {
-                shutdown_flag.store(true, Ordering::SeqCst);
+            let received = received.trim();
+            match received {
+                SHUTDOWN_COMMAND => {
+                    shutdown_flag.store(true, Ordering::SeqCst);
+                }
+                STATUS_COMMAND => {
+                    if check_if_lock_file_exists() {
+                        println!("Server runnign!");
+                    } else {
+                        println!("Server not runnign!");
+                    }
+                }
+                _ => {}
             }
         }
         Err(e) => eprintln!("Failed to receive data: {}", e),
@@ -329,6 +355,22 @@ fn setup_lock_file() {
     }
 }
 
+fn check_if_lock_file_exists() -> bool {
+    // Get the current working directory
+    let current_dir = match env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("Failed to determine current directory: {}", e);
+            process::exit(1);
+        }
+    };
+    
+    // Construct the path to the lock file
+    let lock_path = current_dir.join("hub_app.lock");
+
+    lock_path.as_path().exists()
+}
+
 pub fn get_user_args() -> ArgMatches {
     Command::new("Hub")
         .version("0.1")
@@ -353,6 +395,7 @@ pub fn get_user_args() -> ArgMatches {
                 ),
         )
         .subcommand(Command::new("shutdown").about("Shutdown's the program and it's it all down"))
+        .subcommand(Command::new("status").about("Shows some basic status info"))
         .arg(
             Arg::new("log_level")
                 .long("log-level")
