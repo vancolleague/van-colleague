@@ -262,6 +262,7 @@ async fn await_for_inquiry_response(shared_action: Arc<Mutex<SharedBLECommand>>)
                 _ => {}
             }
         }
+        sleep(Duration::from_millis(10)).await;
     }
 }
 

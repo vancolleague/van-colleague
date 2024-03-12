@@ -135,13 +135,14 @@ impl Session {
                                 ref action,
                             } => {
                                 let mut already_processed = false;
-                                for ds in DEVICE_GROUPS.iter() {
-                                    if device_uuid != &Uuid::from_u128(ds.uuid_number.clone()) {
+                                for device_group in DEVICE_GROUPS.iter() {
+                                    if device_uuid != &Uuid::from_u128(device_group.uuid_number.clone()) {
                                         continue;
                                     }
-                                    for (u, ld) in located_devices.iter_mut() {
-                                        if ld.device.device_group == Some(ds.device_group) {
-                                            update_device(&ld.ip, &u, &action).await;
+                                    for (device_uuid, located_device) in located_devices.iter_mut() {
+                                        if located_device.device.device_group == Some(device_group.device_group) {
+                                            // TODO: seems like updates could be made in parallel
+                                            update_device(&located_device.ip, &device_uuid, &action).await;
                                         }
                                     }
                                     already_processed = true;
@@ -170,6 +171,7 @@ impl Session {
                             SBC::NoUpdate => {}
                         }
                     }
+                    std::thread::sleep(Duration::from_millis(10));
                 }
 
                 println!("Shutdown!!!!!!!!");
@@ -250,8 +252,8 @@ impl Session {
         }
 
         println!("Devices:");
-        for device in located_devices.keys() {
-            println!("    {}", &device);
+        for device in located_devices.values() {
+            println!("    {}, {}", &device.device.uuid, &device.device.name);
         }
 
         located_devices
