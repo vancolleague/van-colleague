@@ -1,17 +1,11 @@
 //! Serves a Bluetooth GATT application using the callback programming model.
-use std::{
-    collections::{BTreeMap, HashMap},
-    iter::Peekable,
-    slice::Iter,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, iter::Peekable, slice::Iter, sync::Arc, time::Duration};
 
 use bluer::{
     adv::Advertisement,
     gatt::local::{
-        Application, Characteristic,
-        CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, Service,
+        Application, Characteristic, CharacteristicRead, CharacteristicWrite,
+        CharacteristicWriteMethod, Service,
     },
     Uuid,
 };
@@ -22,13 +16,15 @@ use tokio::{
     time::sleep,
 };
 
-use device::{Action, DEVICE_GROUPS};
+use device::{Action, Device, DEVICE_GROUPS};
 
-use crate::devices::LocatedDevice;
 use crate::thread_sharing::*;
 
 #[allow(dead_code)]
 const MANUFACTURER_ID: u16 = 0x45F1;
+
+const HUB_UUID: Uuid = Uuid::from_u128(0x0da6f72304f342818b4827c89c208284);
+const REBOOT_UUID: Uuid = Uuid::from_u128(0xeab109d7537d48bd9ce6041208c42692);
 
 pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
     let session = bluer::Session::new().await.unwrap();
@@ -62,7 +58,10 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
 
     let app_handle = adapter.serve_gatt_application(app).await.unwrap();
 
-    println!("Service ready. Press enter to quit.");
+    loop {
+        sleep(Duration::from_secs(1000)).await;
+    }
+    /*println!("Service ready. Press enter to quit.");
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
     let _ = lines.next_line().await;
@@ -70,31 +69,74 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
     println!("Removing service and advertisement");
     drop(app_handle);
     drop(adv_handle);
-    sleep(Duration::from_secs(1)).await;
+    sleep(Duration::from_secs(1)).await;*/
 }
 
-pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECommand>>) -> Service {
-    let shared_command_read = Arc::clone(&shared_command);
-    let shared_command_write = Arc::clone(&shared_command);
-    let set_uuid: Uuid = Action::Set(0).to_uuid();
+pub fn hub_reboot_service(
+    shared_ble_command: Arc<Mutex<SharedBLECommand>>,
+    primary: bool,
+) -> Service {
+    let shared_ble_command_write = Arc::clone(&shared_ble_command);
+    Service {
+        uuid: HUB_UUID,
+        primary,
+        characteristics: vec![Characteristic {
+            uuid: REBOOT_UUID,
+            write: Some(CharacteristicWrite {
+                write: true,
+                write_without_response: true,
+                method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
+                    let shared_ble_command_write_clone = shared_ble_command_write.clone();
+                    async move {
+                        let text = std::str::from_utf8(&new_value).unwrap();
+                        let target: usize =
+                            text.chars().take(1).collect::<String>().parse().unwrap();
+                        {
+                            let mut shared_ble_command_write_guard =
+                                shared_ble_command_write_clone.lock().await;
+                            *shared_ble_command_write_guard =
+                                SharedBLECommand::Reboot { node_count: target };
+                        }
+                        Ok(())
+                    }
+                    .boxed()
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+/// this isn't generic, it only works for Set becaue of how targets/values are handled
+pub fn generic_read_write_service(
+    service_uuid: Uuid,
+    char_uuid: Uuid,
+    shared_ble_command: Arc<Mutex<SharedBLECommand>>,
+    primary: bool,
+) -> Service {
+    let shared_ble_command_read = Arc::clone(&shared_ble_command);
+    let shared_ble_command_write = Arc::clone(&shared_ble_command);
     Service {
         uuid: service_uuid,
-        primary: true,
+        primary,
         characteristics: vec![Characteristic {
-            uuid: set_uuid,
+            uuid: char_uuid,
             read: Some(CharacteristicRead {
                 read: true,
                 fun: Box::new(move |_req| {
-                    let shared_command_read_clone = shared_command_read.clone();
+                    let shared_ble_command_read_clone = shared_ble_command_read.clone();
                     async move {
                         {
-                            let mut shared_command_read_guard =
-                                shared_command_read_clone.lock().await;
-                            *shared_command_read_guard = SharedBLECommand::TargetInquiry {
+                            let mut shared_ble_command_read_guard =
+                                shared_ble_command_read_clone.lock().await;
+                            *shared_ble_command_read_guard = SharedBLECommand::TargetInquiry {
                                 device_uuid: service_uuid,
                             };
                         }
-                        let response = await_for_inquiry_response(shared_command_read_clone).await;
+                        let response =
+                            await_for_inquiry_response(shared_ble_command_read_clone).await;
                         println!("BLE response: {}", &response);
                         Ok(response.to_string().as_bytes().to_vec())
                     }
@@ -106,17 +148,17 @@ pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECom
                 write: true,
                 write_without_response: true,
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
-                    let shared_command_write_clone = shared_command_write.clone();
+                    let shared_ble_command_write_clone = shared_ble_command_write.clone();
                     async move {
                         let text = std::str::from_utf8(&new_value).unwrap();
-                        let target: usize =
-                            text.chars().take(1).collect::<String>().parse().unwrap();
+                        let target: Option<usize> =
+                            text.chars().take(1).collect::<String>().parse().ok();
                         {
-                            let mut shared_command_write_guard =
-                                shared_command_write_clone.lock().await;
-                            *shared_command_write_guard = SharedBLECommand::Command {
+                            let mut shared_ble_command_write_guard =
+                                shared_ble_command_write_clone.lock().await;
+                            *shared_ble_command_write_guard = SharedBLECommand::Command {
                                 device_uuid: service_uuid,
-                                action: Action::Set(target),
+                                action: Action::from_u128(char_uuid.as_u128(), target).unwrap(),
                             };
                         }
                         Ok(())
@@ -133,8 +175,8 @@ pub fn slider_service(service_uuid: Uuid, shared_command: Arc<Mutex<SharedBLECom
 
 pub fn voice_service(
     service_uuid: Uuid,
-    shared_command: Arc<Mutex<SharedBLECommand>>,
-    located_devices: HashMap<Uuid, LocatedDevice>,
+    shared_ble_command: Arc<Mutex<SharedBLECommand>>,
+    devices: Vec<Device>,
 ) -> Service {
     let set_uuid: Uuid = Action::Set(0).to_uuid();
     Service {
@@ -147,28 +189,33 @@ pub fn voice_service(
                 write_without_response: true,
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     println!("voice received");
-                    let shared_command_clone = Arc::clone(&shared_command);
-                    let located_devices_clone = located_devices
+                    let shared_ble_command_clone = Arc::clone(&shared_ble_command);
+                    let device_identifications_clone = devices
                         .iter()
-                        .map(|(u, ld)| (ld.device.name.clone(), u.clone()))
+                        .map(|d| (d.name.clone(), d.uuid.clone()))
                         .collect::<Vec<(String, Uuid)>>();
-                    let device_groups_clone = DEVICE_GROUPS
+                    let device_group_identifications_clone = DEVICE_GROUPS
                         .iter()
                         .map(|ds| (ds.name.to_string(), Uuid::from_u128(ds.uuid_number.clone())))
                         .collect::<Vec<(String, Uuid)>>();
                     async move {
-                        let command = std::str::from_utf8(&new_value).unwrap();
-                        let command = command.to_lowercase();
-                        let command = command.trim_end();
-                        let command = command.trim_end_matches('\0');
-                        let command = command.split_whitespace().collect::<Vec<&str>>();
+                        let command = std::str::from_utf8(&new_value).unwrap().to_lowercase();
+                        let command = command
+                            .trim_end()
+                            .trim_end_matches('\0')
+                            .split_whitespace()
+                            .collect::<Vec<&str>>();
                         let mut command_iter = command.iter().peekable();
 
+                        // check if the device is in a group such as "lights" or "fans"
                         let mut device_uuid =
-                            get_device_name(device_groups_clone, &mut command_iter);
+                            get_device_name(device_group_identifications_clone, &mut command_iter);
+                        // if it's not, look at the hardware device names such as "kitchen light"
+                        // or "roof vent"
                         if device_uuid.is_none() {
                             command_iter = command.iter().peekable();
-                            device_uuid = get_device_name(located_devices_clone, &mut command_iter);
+                            device_uuid =
+                                get_device_name(device_identifications_clone, &mut command_iter);
                         }
                         if device_uuid.is_none() {
                             panic!("Didn't get a device");
@@ -230,8 +277,9 @@ pub fn voice_service(
                             }
                         };
                         {
-                            let mut shared_command_guard = shared_command_clone.lock().await;
-                            *shared_command_guard = SharedBLECommand::Command {
+                            let mut shared_ble_command_guard =
+                                shared_ble_command_clone.lock().await;
+                            *shared_ble_command_guard = SharedBLECommand::Command {
                                 device_uuid: uuid,
                                 action: action,
                             };
@@ -248,11 +296,11 @@ pub fn voice_service(
     }
 }
 
-async fn await_for_inquiry_response(shared_action: Arc<Mutex<SharedBLECommand>>) -> usize {
+async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLECommand>>) -> usize {
     println!("Waiting???????????");
     loop {
         {
-            let mut lock = shared_action.lock().await;
+            let mut lock = shared_ble_action.lock().await;
             match &*lock {
                 SharedBLECommand::TargetResponse { ref target } => {
                     let thing = target.clone();
@@ -302,4 +350,81 @@ fn get_device_name(
     }
 
     None
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_get_device_name_two_words() {
+        let name_list = vec![
+            ("lights".to_string(), Uuid::from_u128(0x0)),
+            ("kitchen light".to_string(), Uuid::from_u128(0x1)),
+            ("bedroom light".to_string(), Uuid::from_u128(0x2)),
+            ("four".to_string(), Uuid::from_u128(0x3)),
+        ];
+
+        let command_words = "kitchen light up 3".to_string();
+        let command_words = command_words.to_lowercase();
+        let command_words = command_words
+            .trim_end()
+            .trim_end_matches('\0')
+            .split_whitespace()
+            .collect::<Vec<&str>>();
+        let mut command_words = command_words.iter().peekable();
+
+        let name = get_device_name(name_list, &mut command_words);
+
+        assert_eq!(
+            name,
+            Some(("kitchen light".to_string(), Uuid::from_u128(0x1)))
+        );
+    }
+
+    #[test]
+    fn test_get_device_name_one_word() {
+        let name_list = vec![
+            ("lights".to_string(), Uuid::from_u128(0x0)),
+            ("kitchen light".to_string(), Uuid::from_u128(0x1)),
+            ("bedroom light".to_string(), Uuid::from_u128(0x2)),
+            ("four".to_string(), Uuid::from_u128(0x3)),
+        ];
+
+        let command_words = "lights up 3".to_string();
+        let command_words = command_words.to_lowercase();
+        let command_words = command_words
+            .trim_end()
+            .trim_end_matches('\0')
+            .split_whitespace()
+            .collect::<Vec<&str>>();
+        let mut command_words = command_words.iter().peekable();
+
+        let name = get_device_name(name_list, &mut command_words);
+
+        assert_eq!(name, Some(("lights".to_string(), Uuid::from_u128(0x0))));
+    }
+
+    #[test]
+    fn test_get_device_name_none() {
+        let name_list = vec![
+            ("lights".to_string(), Uuid::from_u128(0x0)),
+            ("kitchen light".to_string(), Uuid::from_u128(0x1)),
+            ("bedroom light".to_string(), Uuid::from_u128(0x2)),
+            ("four".to_string(), Uuid::from_u128(0x3)),
+        ];
+
+        let command_words = "bathroom light up 3".to_string();
+        let command_words = command_words.to_lowercase();
+        let command_words = command_words
+            .trim_end()
+            .trim_end_matches('\0')
+            .split_whitespace()
+            .collect::<Vec<&str>>();
+        let mut command_words = command_words.iter().peekable();
+
+        let name = get_device_name(name_list, &mut command_words);
+
+        assert_eq!(name, None);
+    }
 }

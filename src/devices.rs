@@ -3,11 +3,9 @@ use std::collections::HashMap;
 use std::process::Command;
 
 use regex::Regex;
-use reqwest;
 
 use bluer::Uuid;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use serde_json::Value;
 
 use device::Device;

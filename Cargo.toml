@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 actix-web = "4.5.1"
 bluer = { version = "0.17.0", features = ["full"] }
-clap = "4.5.2"
+clap = { version = "4.5.2", features = ["cargo", "derive"] }
 env_logger = "0.11.3"
 fs2 = "0.4.3"
 futures = "0.3.30"

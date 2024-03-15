@@ -1,8 +1,6 @@
 use bluer::Uuid;
 use serde::{Deserialize, Serialize};
 
-use device;
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SharedConfig {
     pub verbosity: String,
@@ -22,6 +20,9 @@ pub enum SharedBLECommand {
     Command {
         device_uuid: Uuid,
         action: device::Action,
+    },
+    Reboot {
+        node_count: usize,
     },
     TargetInquiry {
         device_uuid: Uuid,

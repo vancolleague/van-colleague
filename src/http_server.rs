@@ -5,8 +5,8 @@ use actix_web::{middleware, web, App, HttpRequest, HttpResponse, HttpServer};
 use bluer::Uuid;
 use tokio::sync::Mutex;
 
-use device::Action;
 use crate::thread_sharing::{SharedConfig, SharedGetRequest};
+use device::Action;
 
 async fn index(
     req: HttpRequest,
