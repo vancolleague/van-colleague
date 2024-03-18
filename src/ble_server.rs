@@ -26,7 +26,7 @@ const MANUFACTURER_ID: u16 = 0x45F1;
 const HUB_UUID: Uuid = Uuid::from_u128(0x0da6f72304f342818b4827c89c208284);
 const REBOOT_UUID: Uuid = Uuid::from_u128(0xeab109d7537d48bd9ce6041208c42692);
 
-pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
+pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_name: String) {
     let session = bluer::Session::new().await.unwrap();
     let adapter = session.default_adapter().await.unwrap();
     adapter.set_powered(true).await.unwrap();
@@ -42,7 +42,7 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>) {
         service_uuids: vec![advertising_uuid].into_iter().collect(),
         manufacturer_data: manufacturer_data.clone(),
         discoverable: Some(true),
-        local_name: Some("VanColleague".to_string()),
+        local_name: Some(ble_name),
         ..Default::default()
     };
     let adv_handle = adapter.advertise(le_advertisement).await.unwrap();

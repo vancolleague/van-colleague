@@ -26,7 +26,7 @@ const VOICE_UUID: Uuid = Uuid::from_u128(0x7e1be1ebf9844e17b0f1049e02a39567);
 const LOCK_FILE_NAME: &'static str = "hub_app.lock";
 
 pub struct Session {
-    pub ble_stuff: Vec<i32>,
+    pub ble_name: String,
     pub listen_port: u16,
     pub shared_get_request: Arc<Mutex<SharedGetRequest>>,
     pub shared_ble_command: Arc<Mutex<SharedBLECommand>>,
@@ -35,7 +35,7 @@ pub struct Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
-            ble_stuff: Vec::new(),
+            ble_name: "VanColleague".to_string(),
             listen_port: 4000,
             shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
             shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),
@@ -46,7 +46,7 @@ impl Default for Session {
 impl Session {
     fn new() -> Self {
         Self {
-            ble_stuff: vec![],
+            ble_name: "VanColleague".to_string(),
             listen_port: 4000,
             shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
             shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),
@@ -296,7 +296,8 @@ impl Session {
     }
 
     fn run_ble_server(&self, advertising_uuid: Uuid, services: Vec<Service>) {
-        tokio::spawn(async move { ble_server::run_ble_server(advertising_uuid, services).await });
+        let name = self.ble_name.clone();
+        tokio::spawn(async move { ble_server::run_ble_server(advertising_uuid, services, name).await });
     }
 }
 
@@ -364,9 +365,10 @@ async fn get_located_devices(node_count: Option<usize>) -> HashMap<Uuid, Located
         Some(nc) => {
             let mut i = 0;
             while located_devices.len() < nc && i < 10 {
-                std::thread::sleep(Duration::from_millis(10000));
+                println!("    trying...");
                 located_devices = get_devices().await;
                 i += 1;
+                std::thread::sleep(Duration::from_millis(10000));
             }
         }
         None => {
