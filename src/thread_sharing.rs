@@ -1,12 +1,12 @@
 use bluer::Uuid;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SharedConfig {
     pub verbosity: String,
 }
 
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
 pub enum SharedGetRequest {
     Command {
         device_uuid: Uuid,
@@ -15,7 +15,7 @@ pub enum SharedGetRequest {
     NoUpdate,
 }
 
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
 pub enum SharedBLECommand {
     Command {
         device_uuid: Uuid,

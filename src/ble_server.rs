@@ -1,5 +1,5 @@
 //! Serves a Bluetooth GATT application using the callback programming model.
-use std::{collections::BTreeMap, iter::Peekable, slice::Iter, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, iter::Peekable, slice::Iter, sync::Arc, time::{Duration, Instant}};
 
 use bluer::{
     adv::Advertisement,
@@ -296,9 +296,13 @@ pub fn voice_service(
     }
 }
 
+/// TODO: should probably reevaluate wait to do if the timeout is hit, a hard coded value is bad
 async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLECommand>>) -> usize {
     println!("Waiting???????????");
-    loop {
+    let start_time = Instant::now();
+    let timeout = 10;
+    while start_time.elapsed().as_secs() < timeout {
+    //loop {
         {
             let mut lock = shared_ble_action.lock().await;
             match &*lock {
@@ -310,8 +314,9 @@ async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLEComman
                 _ => {}
             }
         }
-        sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(9)).await;
     }
+    0
 }
 
 fn get_device_name(
@@ -355,6 +360,28 @@ fn get_device_name(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[tokio::test]
+    async fn test_await_for_inquiry_response() {
+        let shared_ble_command = Arc::new(Mutex::new(SharedBLECommand::NoUpdate));
+        let shared_ble_command_clone = shared_ble_command.clone();
+        let shared_ble_command_clone2 = shared_ble_command.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_secs(1)).await;
+            let mut shared_ble_command_guard = shared_ble_command_clone.lock().await;
+            *shared_ble_command_guard = SharedBLECommand::TargetResponse { target: 5 };
+        });
+        let response = await_for_inquiry_response(shared_ble_command);
+        assert_eq!(*shared_ble_command_clone2.lock().await, SharedBLECommand::NoUpdate);
+        assert_eq!(response.await, 5);
+    }
+
+    #[tokio::test]
+    fn test_await_for_inquiry_response_no_response() {
+        let shared_ble_command = Arc::new(Mutex::new(SharedBLECommand::NoUpdate));
+        let response = await_for_inquiry_response(shared_ble_command);
+        assert_eq!(response.await, 0);
+    }
 
     #[test]
     fn test_get_device_name_two_words() {

@@ -15,8 +15,7 @@ use tokio::{sync::Mutex, time::Duration};
 
 use crate::ble_server;
 use crate::cli_command::CLICommand;
-use crate::devices;
-use crate::devices::{get_devices, LocatedDevice};
+use crate::devices::{self, LocatedDevice};
 use crate::http_server;
 use crate::thread_sharing::{SharedBLECommand, SharedConfig, SharedGetRequest};
 use device::{Action, Device, DEVICE_GROUPS};
@@ -28,6 +27,7 @@ const LOCK_FILE_NAME: &'static str = "hub_app.lock";
 pub struct Session {
     pub ble_name: String,
     pub listen_port: u16,
+    pub reboot_wait: usize,
     pub shared_get_request: Arc<Mutex<SharedGetRequest>>,
     pub shared_ble_command: Arc<Mutex<SharedBLECommand>>,
 }
@@ -37,6 +37,7 @@ impl Default for Session {
         Self {
             ble_name: "VanColleague".to_string(),
             listen_port: 4000,
+            reboot_wait: 10,
             shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
             shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),
         }
@@ -44,12 +45,15 @@ impl Default for Session {
 }
 
 impl Session {
-    fn new() -> Self {
+    fn new(ble_name: String, listen_port: u16, reboot_wait: usize) -> Self {
         Self {
-            ble_name: "VanColleague".to_string(),
-            listen_port: 4000,
-            shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
-            shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),
+            ble_name,
+            listen_port,
+            reboot_wait,
+            ..Default::default() /*ble_name: "VanColleague".to_string(),
+                                 listen_port: 4000,
+                                 shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
+                                 shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),*/
         }
     }
 
@@ -63,19 +67,19 @@ impl Session {
                 match CLICommand::from_str(command) {
                     Ok(c) => c,
                     Err(_) => {
-                        println!("You must enter a command, perhapse you wanted:");
-                        println!("  > hub run");
-                        println!("or");
-                        println!("  > hub help");
+                        eprintln!("You must enter a command, perhapse you wanted:");
+                        eprintln!("  > hub run");
+                        eprintln!("or");
+                        eprintln!("  > hub help");
                         process::exit(1);
                     }
                 }
             }
             _ => {
-                println!("You must enter a command, perhapse you wanted:");
-                println!("  > hub run");
-                println!("or");
-                println!("  > hub help");
+                eprintln!("You must enter a command, perhapse you wanted:");
+                eprintln!("  > hub run");
+                eprintln!("or");
+                eprintln!("  > hub help");
                 process::exit(1);
             }
         };
@@ -94,15 +98,23 @@ impl Session {
                     }
                     Err(_) => {}
                 }
-                drop(test_connection);
                 //setup_lock_file();
 
                 let node_count_text: Option<&String> = sub_matches.get_one("node-count");
                 let node_count: Option<usize> = match node_count_text {
-                    Some(nc) => Some(nc.parse().unwrap()),
+                    Some(count) => {
+                        match count.parse() {
+                            Ok(nc) => Some(nc),
+                            Err(_) => {
+                                eprintln!("An invalid -node-count was entered, it must be a posative integer");
+                                process::exit(1);
+                            }
+                        }
+                    }
                     None => None,
                 };
                 let mut located_devices = get_located_devices(node_count).await;
+                // TODO: check for bad stuff here
                 self.run_http_server(&located_devices);
 
                 self.start_console_command_sharing(shutdown_flag.clone());
@@ -118,10 +130,10 @@ impl Session {
                 let port = self.listen_port.to_string();
                 tokio::spawn(async move {
                     tokio::signal::ctrl_c().await.unwrap();
-                    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+                    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Had an issue connecting the ctrl-c watcher to the thread sharing TcpStream");
                     stream
                         .write_all(CLICommand::Shutdown.to_str().as_bytes())
-                        .unwrap();
+                        .expect("Had an issue writing the ctrl-c shutdown command to the TcpStream");
                     process::exit(0);
                 });
 
@@ -254,7 +266,7 @@ impl Session {
             }
             CLICommand::Reboot => {
                 println!("Rebooting...");
-                let reboot_args = get_reboot_args(&sub_matches);
+                let reboot_args = self.get_reboot_args(&sub_matches);
                 rebooter(reboot_args, self.listen_port.clone().to_string());
             }
         }
@@ -264,7 +276,7 @@ impl Session {
     /// console windows
     fn start_console_command_sharing(&self, shutdown_flag: Arc<AtomicBool>) {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.listen_port.to_string()))
-            .expect("Failed to bind to address");
+            .expect("Failed to bind to console_command_sharing address");
         tokio::spawn(async move {
             for stream in listener.incoming() {
                 match stream {
@@ -297,7 +309,32 @@ impl Session {
 
     fn run_ble_server(&self, advertising_uuid: Uuid, services: Vec<Service>) {
         let name = self.ble_name.clone();
-        tokio::spawn(async move { ble_server::run_ble_server(advertising_uuid, services, name).await });
+        tokio::spawn(
+            async move { ble_server::run_ble_server(advertising_uuid, services, name).await },
+        );
+    }
+
+    fn get_reboot_args(&self, sub_matches: &ArgMatches) -> Vec<String> {
+        let mut args = Vec::new();
+
+        args.push("run".to_string());
+
+        match sub_matches.get_one::<String>("node-count") {
+            Some(nc) => {
+                if nc.parse::<u32>().is_err() {
+                    println!("You specified that you want to specifiy the number of nodes but you didn't include a positive integer value");
+                    process::exit(1);
+                }
+                args.push("-c".to_string());
+                args.push(nc.clone());
+            }
+            None => {}
+        }
+
+        args.push("-w".to_string());
+        args.push(self.reboot_wait.to_string());
+
+        args
     }
 }
 
@@ -333,15 +370,12 @@ fn get_ble_services(
     let mut ble_services = Vec::new();
     let mut set_as_primary = true;
     for device in devices.iter() {
-        //     for action in device.get_available_actions().iter() {
         ble_services.push(ble_server::generic_read_write_service(
             device.uuid,
             Action::Set(0).to_uuid(),
-            //    action.to_uuid(),
             shared_ble_command.clone(),
             true,
         ));
-        //}
     }
 
     ble_services.push(ble_server::voice_service(
@@ -358,6 +392,8 @@ fn get_ble_services(
     ble_services
 }
 /// Get the list of connected devices if applicable
+/// TODO: maybe it should keep track of the max Hashmap of devices so if the limit of 10 tries is
+/// hit, that should be what's returned
 async fn get_located_devices(node_count: Option<usize>) -> HashMap<Uuid, LocatedDevice> {
     let mut located_devices = HashMap::new();
     println!("Getting Devices!!");
@@ -366,14 +402,14 @@ async fn get_located_devices(node_count: Option<usize>) -> HashMap<Uuid, Located
             let mut i = 0;
             while located_devices.len() < nc && i < 10 {
                 println!("    trying...");
-                located_devices = get_devices().await;
+                located_devices = devices::get_devices().await;
                 i += 1;
-                std::thread::sleep(Duration::from_millis(10000));
+                std::thread::sleep(Duration::from_secs(10));
             }
         }
         None => {
-            std::thread::sleep(Duration::from_millis(10000));
-            located_devices = get_devices().await;
+            std::thread::sleep(Duration::from_secs(10));
+            located_devices = devices::get_devices().await;
         }
     }
 
@@ -495,34 +531,11 @@ fn wait_to_start(sub_matches: &ArgMatches) {
     let wait_time = match wait_time.parse() {
         Ok(wt) => wt,
         Err(_) => {
-            println!("You specified that you want to wait to start but you didn't include a positive integer value");
+            eprintln!("You specified that you want to wait to start but you didn't include a positive integer value");
             process::exit(1);
         }
     };
     std::thread::sleep(Duration::from_secs(wait_time));
-}
-
-fn get_reboot_args(sub_matches: &ArgMatches) -> Vec<String> {
-    let mut args = Vec::new();
-
-    args.push("run".to_string());
-
-    match sub_matches.get_one::<String>("node-count") {
-        Some(nc) => {
-            if nc.parse::<u32>().is_err() {
-                println!("You specified that you want to specifiy the number of nodes but you didn't include a positive integer value");
-                process::exit(1);
-            }
-            args.push("-c".to_string());
-            args.push(nc.clone());
-        }
-        None => {}
-    }
-
-    args.push("-w".to_string());
-    args.push("10".to_string());
-
-    args
 }
 
 pub fn get_user_args() -> clap::Command {
@@ -605,11 +618,12 @@ mod tests {
 
     #[test]
     fn helper_get_reboot_args() {
+        let session = Session{..Default::default()};
         let simulated_args = vec!["Hub", "run", "-c", "1"];
         let args = get_user_args().get_matches_from(simulated_args);
         let (_, sub_args) = args.subcommand().unwrap();
         assert_eq!(
-            get_reboot_args(sub_args),
+            session.get_reboot_args(sub_args),
             vec!["run", "-c", "1", "-w", "10"]
         );
 
@@ -617,7 +631,7 @@ mod tests {
         let args = get_user_args().get_matches_from(simulated_args);
         let (_, sub_args) = args.subcommand().unwrap();
         assert_eq!(
-            get_reboot_args(sub_args),
+            session.get_reboot_args(sub_args),
             vec!["run", "-c", "2", "-w", "10"]
         );
     }

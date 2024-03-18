@@ -104,14 +104,15 @@ fn run_nmap() -> String {
         String::from_utf8_lossy(&output.stdout).into_owned()
     } else {
         panic!(
-            "Command failed: {}",
+            "Command failed: {}, perhapse nmap needs to be installed.",
             String::from_utf8_lossy(&output.stderr)
         );
     }
 }
 
 fn extract_ips(nmap_output: &str) -> Vec<String> {
-    let ip_regex = Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap();
+    let ip_regex =
+        Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").expect("ip search/extraction failed.");
     ip_regex
         .find_iter(nmap_output)
         .map(|match_| match_.as_str().to_string())
