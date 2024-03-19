@@ -137,7 +137,7 @@ pub fn generic_read_write_service(
                         loop {
                             let mut shared_ble_command_read_guard =
                                 shared_ble_command_read_clone.lock().await;
-                            if shared_ble_command_read_guard == SharedBLECommand::NoUpdate {
+                            if *shared_ble_command_read_guard == SharedBLECommand::NoUpdate {
                                 *shared_ble_command_read_guard = SharedBLECommand::TargetInquiry {
                                     device_uuid: service_uuid,
                                 };
@@ -289,7 +289,7 @@ pub fn voice_service(
                         loop {
                             let mut shared_ble_command_guard =
                                 shared_ble_command_clone.lock().await;
-                            if shared_ble_command_guard == SharedBLECommand::NoUpdate {
+                            if *shared_ble_command_guard == SharedBLECommand::NoUpdate {
                                 *shared_ble_command_guard = SharedBLECommand::Command {
                                     device_uuid: uuid,
                                     action: action,
