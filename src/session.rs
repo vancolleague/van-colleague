@@ -133,7 +133,9 @@ impl Session {
                     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Had an issue connecting the ctrl-c watcher to the thread sharing TcpStream");
                     stream
                         .write_all(CLICommand::Shutdown.to_str().as_bytes())
-                        .expect("Had an issue writing the ctrl-c shutdown command to the TcpStream");
+                        .expect(
+                            "Had an issue writing the ctrl-c shutdown command to the TcpStream",
+                        );
                     process::exit(0);
                 });
 
@@ -618,7 +620,9 @@ mod tests {
 
     #[test]
     fn helper_get_reboot_args() {
-        let session = Session{..Default::default()};
+        let session = Session {
+            ..Default::default()
+        };
         let simulated_args = vec!["Hub", "run", "-c", "1"];
         let args = get_user_args().get_matches_from(simulated_args);
         let (_, sub_args) = args.subcommand().unwrap();

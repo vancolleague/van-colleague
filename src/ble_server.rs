@@ -1,5 +1,11 @@
 //! Serves a Bluetooth GATT application using the callback programming model.
-use std::{collections::BTreeMap, iter::Peekable, slice::Iter, sync::Arc, time::{Duration, Instant}};
+use std::{
+    collections::BTreeMap,
+    iter::Peekable,
+    slice::Iter,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bluer::{
     adv::Advertisement,
@@ -128,12 +134,16 @@ pub fn generic_read_write_service(
                 fun: Box::new(move |_req| {
                     let shared_ble_command_read_clone = shared_ble_command_read.clone();
                     async move {
-                        {
+                        loop {
                             let mut shared_ble_command_read_guard =
                                 shared_ble_command_read_clone.lock().await;
-                            *shared_ble_command_read_guard = SharedBLECommand::TargetInquiry {
-                                device_uuid: service_uuid,
-                            };
+                            if shared_ble_command_read_guard == SharedBLECommand::NoUpdate {
+                                *shared_ble_command_read_guard = SharedBLECommand::TargetInquiry {
+                                    device_uuid: service_uuid,
+                                };
+                                break;
+                            }
+                            sleep(Duration::from_millis(3)).await;
                         }
                         let response =
                             await_for_inquiry_response(shared_ble_command_read_clone).await;
@@ -276,13 +286,17 @@ pub fn voice_service(
                                 panic!("Issue creating the action");
                             }
                         };
-                        {
+                        loop {
                             let mut shared_ble_command_guard =
                                 shared_ble_command_clone.lock().await;
-                            *shared_ble_command_guard = SharedBLECommand::Command {
-                                device_uuid: uuid,
-                                action: action,
-                            };
+                            if shared_ble_command_guard == SharedBLECommand::NoUpdate {
+                                *shared_ble_command_guard = SharedBLECommand::Command {
+                                    device_uuid: uuid,
+                                    action: action,
+                                };
+                                break;
+                            }
+                            sleep(Duration::from_millis(3)).await;
                         }
                         Ok(())
                     }
@@ -296,13 +310,12 @@ pub fn voice_service(
     }
 }
 
-/// TODO: should probably reevaluate wait to do if the timeout is hit, a hard coded value is bad
 async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLECommand>>) -> usize {
     println!("Waiting???????????");
     let start_time = Instant::now();
     let timeout = 10;
-    while start_time.elapsed().as_secs() < timeout {
-    //loop {
+    //   while start_time.elapsed().as_secs() < timeout {
+    loop {
         {
             let mut lock = shared_ble_action.lock().await;
             match &*lock {
@@ -314,9 +327,9 @@ async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLEComman
                 _ => {}
             }
         }
-        sleep(Duration::from_millis(9)).await;
+        //        sleep(Duration::from_millis(9)).await;
     }
-    0
+    // 0
 }
 
 fn get_device_name(
@@ -372,7 +385,10 @@ mod test {
             *shared_ble_command_guard = SharedBLECommand::TargetResponse { target: 5 };
         });
         let response = await_for_inquiry_response(shared_ble_command);
-        assert_eq!(*shared_ble_command_clone2.lock().await, SharedBLECommand::NoUpdate);
+        assert_eq!(
+            *shared_ble_command_clone2.lock().await,
+            SharedBLECommand::NoUpdate
+        );
         assert_eq!(response.await, 5);
     }
 
