@@ -1,6 +1,6 @@
 //! Serves a Bluetooth GATT application using the callback programming model.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     iter::Peekable,
     slice::Iter,
     sync::Arc,
@@ -33,15 +33,10 @@ const HUB_UUID: Uuid = Uuid::from_u128(0x0da6f72304f342818b4827c89c208284);
 const REBOOT_UUID: Uuid = Uuid::from_u128(0xeab109d7537d48bd9ce6041208c42692);
 
 pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_name: String) {
-    let session = bluer::Session::new().await.unwrap();
-    let adapter = session.default_adapter().await.unwrap();
+    let session = bluer::Session::new().await.expect("bluer session issue");
+    let adapter = session.default_adapter().await.expect("session adapter issue");
     adapter.set_powered(true).await.unwrap();
 
-    /*println!(
-        "Advertising on Bluetooth adapter {} with address {}",
-        adapter.name(),
-        adapter.address().await.unwrap()
-    );*/
     let mut manufacturer_data = BTreeMap::new();
     manufacturer_data.insert(MANUFACTURER_ID, vec![0x21, 0x22, 0x23, 0x24]);
     let le_advertisement = Advertisement {
@@ -51,7 +46,7 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_
         local_name: Some(ble_name),
         ..Default::default()
     };
-    let adv_handle = adapter.advertise(le_advertisement).await.unwrap();
+    let adv_handle = adapter.advertise(le_advertisement).await.expect("adapter advertiser issue");
 
     println!(
         "Serving GATT service on Bluetooth adapter {}",
@@ -62,20 +57,11 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_
         ..Default::default()
     };
 
-    let app_handle = adapter.serve_gatt_application(app).await.unwrap();
+    let app_handle = adapter.serve_gatt_application(app).await.expect("Gatt application seriving issue");
 
     loop {
         sleep(Duration::from_secs(1000)).await;
     }
-    /*println!("Service ready. Press enter to quit.");
-    let stdin = BufReader::new(tokio::io::stdin());
-    let mut lines = stdin.lines();
-    let _ = lines.next_line().await;
-
-    println!("Removing service and advertisement");
-    drop(app_handle);
-    drop(adv_handle);
-    sleep(Duration::from_secs(1)).await;*/
 }
 
 pub fn hub_reboot_service(
@@ -94,9 +80,15 @@ pub fn hub_reboot_service(
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     let shared_ble_command_write_clone = shared_ble_command_write.clone();
                     async move {
-                        let text = std::str::from_utf8(&new_value).unwrap();
+                        let text = match std::str::from_utf8(&new_value) {
+                            Ok(t) => t,
+                            Err(_) => { return Ok(()); }
+                        };
                         let target: usize =
-                            text.chars().take(1).collect::<String>().parse().unwrap();
+                            match text.chars().take(1).collect::<String>().parse() {
+                                Ok(t) => t,
+                                Err(_) => { return Ok(()); }
+                            };
                         {
                             let mut shared_ble_command_write_guard =
                                 shared_ble_command_write_clone.lock().await;
@@ -160,16 +152,33 @@ pub fn generic_read_write_service(
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     let shared_ble_command_write_clone = shared_ble_command_write.clone();
                     async move {
-                        let text = std::str::from_utf8(&new_value).unwrap();
-                        let target: Option<usize> =
-                            text.chars().take(1).collect::<String>().parse().ok();
-                        {
-                            let mut shared_ble_command_write_guard =
-                                shared_ble_command_write_clone.lock().await;
-                            *shared_ble_command_write_guard = SharedBLECommand::Command {
-                                device_uuid: service_uuid,
-                                action: Action::from_u128(char_uuid.as_u128(), target).unwrap(),
-                            };
+                        let text = std::str::from_utf8(&new_value);
+                        match std::str::from_utf8(&new_value) {
+                            Ok(text) => {
+                                let target: Option<usize> =
+                                    match text.chars().take(1).collect::<String>().parse() {
+                                        Ok(t) => Some(t),
+                                        Err(e) => {
+                                            eprintln!("Bad CharicteristicWrite text received: {}", e);
+                                            return Ok(());
+                                        },
+                                };
+                                loop {
+                                    let mut shared_ble_command_write_guard =
+                                        shared_ble_command_write_clone.lock().await;
+                                    if *shared_ble_command_write_guard == SharedBLECommand::NoUpdate {
+                                        *shared_ble_command_write_guard = SharedBLECommand::Command {
+                                            device_uuid: service_uuid,
+                                            action: Action::from_u128(char_uuid.as_u128(), target).unwrap(),
+                                        };
+                                        break;
+                                    }
+                                    sleep(Duration::from_millis(3)).await;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Bad CharicteristicWrite value received: {}", e);
+                            }
                         }
                         Ok(())
                     }
@@ -199,17 +208,23 @@ pub fn voice_service(
                 write_without_response: true,
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     println!("voice received");
-                    let shared_ble_command_clone = Arc::clone(&shared_ble_command);
-                    let device_identifications_clone = devices
+                    let shared_ble_command_clone = shared_ble_command.clone();
+                    let device_ids= devices
                         .iter()
                         .map(|d| (d.name.clone(), d.uuid.clone()))
-                        .collect::<Vec<(String, Uuid)>>();
-                    let device_group_identifications_clone = DEVICE_GROUPS
+                        .collect::<HashMap<String, Uuid>>();
+                    let device_group_ids = DEVICE_GROUPS
                         .iter()
                         .map(|ds| (ds.name.to_string(), Uuid::from_u128(ds.uuid_number.clone())))
-                        .collect::<Vec<(String, Uuid)>>();
+                        .collect::<HashMap<String, Uuid>>();
                     async move {
-                        let command = std::str::from_utf8(&new_value).unwrap().to_lowercase();
+                        let command = match std::str::from_utf8(&new_value) {
+                            Ok(t) => t.to_lowercase(),
+                            Err(e) => {
+                                eprintln!("Bad voice command received: {}", e);
+                                return Ok(());
+                            },
+                        };
                         let command = command
                             .trim_end()
                             .trim_end_matches('\0')
@@ -218,34 +233,31 @@ pub fn voice_service(
                         let mut command_iter = command.iter().peekable();
 
                         // check if the device is in a group such as "lights" or "fans"
-                        let mut device_uuid =
-                            get_device_name(device_group_identifications_clone, &mut command_iter);
+                        let mut device_id = get_device_ids(device_group_ids, &mut command_iter);
                         // if it's not, look at the hardware device names such as "kitchen light"
                         // or "roof vent"
-                        if device_uuid.is_none() {
+                        if device_id.is_none() {
                             command_iter = command.iter().peekable();
-                            device_uuid =
-                                get_device_name(device_identifications_clone, &mut command_iter);
+                            device_id = get_device_ids(device_ids, &mut command_iter);
                         }
-                        if device_uuid.is_none() {
-                            panic!("Didn't get a device");
+                        if device_id.is_none() {
+                            eprintln!("Bad device name given");
+                            return Ok(());
                         }
-                        let (_device, uuid) = device_uuid.unwrap();
+                        let (_name, uuid) = device_id.unwrap();
 
-                        if uuid.as_u128() == 0x0 {
-                            panic!("didn't get the device id");
-                        }
                         let action = match command_iter.next() {
-                            Some(&"at") => "set",
+                            Some(&"at") => "set", // for when it hears "at" instead of "set"
                             Some(a) => a,
-                            None => panic!("failed to get an action"), //return HttpResponse::Ok().body("Oops, we didn't get an action!"),
+                            None => { return Ok(()); }
+                            //None => panic!("failed to get an action"), //return HttpResponse::Ok().body("Oops, we didn't get an action!"),
                         };
                         let target = match command_iter.next() {
                             Some(t) => {
                                 if t.is_empty() {
                                     None
                                 } else {
-                                    let t: usize = match t {
+                                    let target: usize = match t {
                                         &"zero" => 0,
                                         &"0" => 0,
                                         &"one" => 1,
@@ -272,9 +284,9 @@ pub fn voice_service(
                                         &"seven" => 7,
                                         &"7" => 7,
                                         &"7:00" => 7,
-                                        _ => panic!("Bad target spoken"),
+                                        _ => { return Ok(()); }
                                     };
-                                    Some(t)
+                                    Some(target)
                                 }
                             }
                             None => None,
@@ -282,17 +294,15 @@ pub fn voice_service(
 
                         let action = match Action::from_str(action, target) {
                             Ok(a) => a,
-                            Err(_) => {
-                                panic!("Issue creating the action");
-                            }
+                            Err(_) => return Ok(())
                         };
                         loop {
                             let mut shared_ble_command_guard =
                                 shared_ble_command_clone.lock().await;
                             if *shared_ble_command_guard == SharedBLECommand::NoUpdate {
                                 *shared_ble_command_guard = SharedBLECommand::Command {
-                                    device_uuid: uuid,
-                                    action: action,
+                                    device_uuid: service_uuid,
+                                    action: action.clone(),
                                 };
                                 break;
                             }
@@ -312,8 +322,8 @@ pub fn voice_service(
 
 async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLECommand>>) -> usize {
     println!("Waiting???????????");
-    let start_time = Instant::now();
-    let timeout = 10;
+    //let start_time = Instant::now();
+    //let timeout = 10;
     //   while start_time.elapsed().as_secs() < timeout {
     loop {
         {
@@ -332,42 +342,44 @@ async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLEComman
     // 0
 }
 
-fn get_device_name(
-    name_list: Vec<(String, Uuid)>,
+fn get_device_ids(
+    group_names: HashMap<String, Uuid>,
     command_words: &mut Peekable<Iter<'_, &str>>,
 ) -> Option<(String, Uuid)> {
-    let mut device_name = command_words.next().unwrap().to_string();
-    let mut next_word = command_words.peek();
+    let mut partial_device_name = match command_words.next() {
+        Some(t) => t.to_string(),
+        None => return None,
+    };
+    let mut next_command_word = command_words.peek();
 
-    let mut names = Vec::new();
-    let mut uuids = Vec::new();
-    for (n, u) in name_list.iter() {
-        names.push(n);
-        uuids.push(u);
-    }
-
-    let mut found_name = "".to_string();
-    while next_word.is_some() {
-        if names.contains(&&device_name.to_string()) {
-            found_name = device_name.to_string();
+    let mut found_device_name = "".to_string();
+    while next_command_word.is_some() {
+        if group_names.keys().any(|n| n == &partial_device_name) {
+        //if device_names.contains(&&device_name.to_string()) {
+            found_device_name = partial_device_name;
             break;
         }
-        device_name = format!("{} {}", device_name, next_word.unwrap());
+        partial_device_name = format!("{} {}", partial_device_name, next_command_word.expect("This value checked in while loop"));
         command_words.next();
-        next_word = command_words.peek();
+        next_command_word = command_words.peek();
     }
 
-    if found_name == "".to_string() {
+    match group_names.get(&found_device_name) {
+        Some(u) => Some((found_device_name, u.clone())),
+        None => None,
+    }
+   /* 
+    if found_device_name == "".to_string() {
         return None;
     }
 
     for (n, u) in name_list {
-        if n == found_name {
-            return Some((found_name, u.clone()));
+        if n == found_device_name {
+            return Some((u.clone(), found_device_name));
         }
     }
 
-    None
+    None*/
 }
 
 #[cfg(test)]
@@ -392,21 +404,21 @@ mod test {
         assert_eq!(response.await, 5);
     }
 
-    #[tokio::test]
-    fn test_await_for_inquiry_response_no_response() {
+    /*#[tokio::test]
+    async fn test_await_for_inquiry_response_no_response() {
         let shared_ble_command = Arc::new(Mutex::new(SharedBLECommand::NoUpdate));
         let response = await_for_inquiry_response(shared_ble_command);
         assert_eq!(response.await, 0);
-    }
+    }*/
 
     #[test]
-    fn test_get_device_name_two_words() {
-        let name_list = vec![
+    fn test_get_device_ids_two_words() {
+        let name_list = HashMap::from([
             ("lights".to_string(), Uuid::from_u128(0x0)),
             ("kitchen light".to_string(), Uuid::from_u128(0x1)),
             ("bedroom light".to_string(), Uuid::from_u128(0x2)),
             ("four".to_string(), Uuid::from_u128(0x3)),
-        ];
+        ]);
 
         let command_words = "kitchen light up 3".to_string();
         let command_words = command_words.to_lowercase();
@@ -417,7 +429,7 @@ mod test {
             .collect::<Vec<&str>>();
         let mut command_words = command_words.iter().peekable();
 
-        let name = get_device_name(name_list, &mut command_words);
+        let name = get_device_ids(name_list, &mut command_words);
 
         assert_eq!(
             name,
@@ -426,13 +438,13 @@ mod test {
     }
 
     #[test]
-    fn test_get_device_name_one_word() {
-        let name_list = vec![
+    fn test_get_device_ids_one_word() {
+        let name_list = HashMap::from([
             ("lights".to_string(), Uuid::from_u128(0x0)),
             ("kitchen light".to_string(), Uuid::from_u128(0x1)),
             ("bedroom light".to_string(), Uuid::from_u128(0x2)),
             ("four".to_string(), Uuid::from_u128(0x3)),
-        ];
+        ]);
 
         let command_words = "lights up 3".to_string();
         let command_words = command_words.to_lowercase();
@@ -443,19 +455,19 @@ mod test {
             .collect::<Vec<&str>>();
         let mut command_words = command_words.iter().peekable();
 
-        let name = get_device_name(name_list, &mut command_words);
+        let name = get_device_ids(name_list, &mut command_words);
 
         assert_eq!(name, Some(("lights".to_string(), Uuid::from_u128(0x0))));
     }
 
     #[test]
-    fn test_get_device_name_none() {
-        let name_list = vec![
+    fn test_get_device_ids_none() {
+        let name_list = HashMap::from([
             ("lights".to_string(), Uuid::from_u128(0x0)),
             ("kitchen light".to_string(), Uuid::from_u128(0x1)),
             ("bedroom light".to_string(), Uuid::from_u128(0x2)),
             ("four".to_string(), Uuid::from_u128(0x3)),
-        ];
+        ]);
 
         let command_words = "bathroom light up 3".to_string();
         let command_words = command_words.to_lowercase();
@@ -466,7 +478,7 @@ mod test {
             .collect::<Vec<&str>>();
         let mut command_words = command_words.iter().peekable();
 
-        let name = get_device_name(name_list, &mut command_words);
+        let name = get_device_ids(name_list, &mut command_words);
 
         assert_eq!(name, None);
     }

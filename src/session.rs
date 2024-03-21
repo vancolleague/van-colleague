@@ -50,10 +50,7 @@ impl Session {
             ble_name,
             listen_port,
             reboot_wait,
-            ..Default::default() /*ble_name: "VanColleague".to_string(),
-                                 listen_port: 4000,
-                                 shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
-                                 shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),*/
+            ..Default::default()
         }
     }
 
@@ -89,30 +86,10 @@ impl Session {
 
                 let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-                let test_connection =
-                    TcpStream::connect(format!("127.0.0.1:{}", self.listen_port.to_string()));
-                match test_connection {
-                    Ok(_) => {
-                        println!("Another instance is already running");
-                        process::exit(0);
-                    }
-                    Err(_) => {}
-                }
+                self.test_for_other_instances();
                 //setup_lock_file();
 
-                let node_count_text: Option<&String> = sub_matches.get_one("node-count");
-                let node_count: Option<usize> = match node_count_text {
-                    Some(count) => {
-                        match count.parse() {
-                            Ok(nc) => Some(nc),
-                            Err(_) => {
-                                eprintln!("An invalid -node-count was entered, it must be a posative integer");
-                                process::exit(1);
-                            }
-                        }
-                    }
-                    None => None,
-                };
+                let node_count = get_node_count(&sub_matches);
                 let mut located_devices = get_located_devices(node_count).await;
                 // TODO: check for bad stuff here
                 self.run_http_server(&located_devices);
@@ -129,7 +106,7 @@ impl Session {
                 /// await a ctl-c command in a spawned thread while the main continues, and one received, exit
                 let port = self.listen_port.to_string();
                 tokio::spawn(async move {
-                    tokio::signal::ctrl_c().await.unwrap();
+                    tokio::signal::ctrl_c().await.expect("Issue with tokio ctrl_c stuff");
                     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Had an issue connecting the ctrl-c watcher to the thread sharing TcpStream");
                     stream
                         .write_all(CLICommand::Shutdown.to_str().as_bytes())
@@ -150,7 +127,8 @@ impl Session {
                                 ref device_uuid,
                                 ref action,
                             } => {
-                                if last_action != (device_uuid.clone(), action.clone()) {
+                                if (&last_action.0, &last_action.1) != (device_uuid, action) {
+                                //if last_action != (device_uuid.clone(), action.clone()) {
                                     last_action = (device_uuid.clone(), action.clone());
                                     let located_device = located_devices.get(&device_uuid);
                                     /*let _target = match action.get_value() {
@@ -217,19 +195,20 @@ impl Session {
                                     reboot_args.push(node_count.to_string());
                                 }
                                 reboot_args.push("-w".to_string());
-                                reboot_args.push("11".to_string());
+                                reboot_args.push("10".to_string());
                                 rebooter(reboot_args, self.listen_port.to_string());
                             }
                             SBC::TargetInquiry { ref device_uuid } => {
-                                let located_device = located_devices.get(&device_uuid).unwrap();
+                                let located_device = located_devices.get(&device_uuid).expect("TargetInquiry had an unfound device_uuid");
                                 let device = get_device_status_helper(
                                     located_device.ip.clone(),
                                     device_uuid.clone(),
                                 )
-                                .await;
+                                .await
+                                .expect("Had an issue running get_device_status_helper");
                                 println!("response: {:?}, {:?}", &device_uuid, &device);
                                 *shared_ble_command_lock = SBC::TargetResponse {
-                                    target: device.unwrap().get_target(),
+                                    target: device.get_target(),
                                 };
                             }
                             SBC::TargetResponse { .. } => {}
@@ -246,10 +225,10 @@ impl Session {
                 println!("Shutting down the program!!!");
                 let mut stream =
                     TcpStream::connect(format!("127.0.0.1:{}", self.listen_port.to_string()))
-                        .unwrap();
+                        .expect("Issue connecting to TcpStream for shutdown");
                 stream
                     .write_all(CLICommand::Shutdown.to_str().as_bytes())
-                    .unwrap();
+                    .expect("Issue writing shutdown command to stream");
                 process::exit(0);
             }
             CLICommand::Status => {
@@ -259,7 +238,7 @@ impl Session {
                         println!("    Running");
                         stream
                             .write_all(CLICommand::Status.to_str().as_bytes())
-                            .unwrap();
+                            .expect("Issue writing status command to stream");
                     }
                     Err(_) => {
                         println!("    Not running");
@@ -338,10 +317,37 @@ impl Session {
 
         args
     }
+
+    fn test_for_other_instances(&self) {
+        let test_connection =
+            TcpStream::connect(format!("127.0.0.1:{}", self.listen_port.to_string()));
+        match test_connection {
+            Ok(_) => {
+                println!("Another instance is already running");
+                process::exit(0);
+            }
+            Err(_) => {}
+        }
+        drop(test_connection);
+    }
+}
+
+fn get_node_count(sub_matches: &ArgMatches) -> Option<usize> {
+    let node_count_text: Option<&String> = sub_matches.get_one("node-count");
+    match node_count_text {
+        Some(count) => match count.parse() {
+            Ok(nc) => Some(nc),
+            Err(_) => {
+                eprintln!("An invalid -node-count was entered, it must be a posative integer");
+                process::exit(1);
+            }
+        },
+        None => None,
+    }
 }
 
 fn rebooter(reboot_args: Vec<String>, listen_port: String) {
-    let exicutable_path = env::current_exe().unwrap().to_str().unwrap().to_string();
+    let exicutable_path = env::current_exe().expect("Issue getting current executable").to_str().expect("Issue converting executable path to str").to_string();
     println!("    Reboot args: {}, {:?}", &exicutable_path, reboot_args);
     match Command::new(exicutable_path)
         .args(&reboot_args)
@@ -356,7 +362,7 @@ fn rebooter(reboot_args: Vec<String>, listen_port: String) {
         Ok(mut stream) => {
             stream
                 .write_all(CLICommand::Reboot.to_str().as_bytes())
-                .unwrap();
+                .expect("Issue writing reboot info to stream");
         }
         Err(_) => {
             println!("    Oops, something went wrong while rebooting...");
@@ -376,7 +382,7 @@ fn get_ble_services(
             device.uuid,
             Action::Set(0).to_uuid(),
             shared_ble_command.clone(),
-            true,
+            set_as_primary,
         ));
     }
 
@@ -437,7 +443,7 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
         &target,
     );
     println!("{}", &url);
-    reqwest::get(&url).await.unwrap();
+    reqwest::get(&url).await.expect("reqwest had an issue sending a get request.");
 }
 
 /// Needed so that the ip and uuid are owned and thus not dropped
@@ -466,8 +472,8 @@ async fn cli_handler(mut stream: TcpStream, shutdown_flag: Arc<AtomicBool>) {
                     }
                 },
                 Err(e) => {
-                    dbg!(e);
-                    // TODO: Do I honestly need to worry about this? can this branch be replaced
+                    eprintln!("A bad command was sceemingly sent: {}", e);
+                    // TODO: can this branch be replaced
                     // with a expect? maybe if the previous thing checked
                 }
             }
@@ -523,7 +529,6 @@ fn check_for_lock_file() -> bool {
 }
 
 fn wait_to_start(sub_matches: &ArgMatches) {
-    //let wait_time: &String = match sub_matches.get_one::<u32>("wait") {
     let wait_time: &String = match sub_matches.get_one("wait") {
         Some(wt) => wt,
         None => {

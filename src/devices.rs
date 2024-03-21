@@ -35,9 +35,9 @@ pub async fn get_devices() -> HashMap<Uuid, LocatedDevice> {
 
     for result in results {
         if result.is_ok() {
-            let result = result.unwrap();
+            let result = result.expect("Ok was just checked!");
             if result.is_some() {
-                let result = result.unwrap();
+                let result = result.expect("Some was just checked!");
                 for (uuid, located_device) in result {
                     devices.insert(uuid, located_device);
                 }
@@ -56,7 +56,7 @@ pub async fn get_device_status(ip: &String, uuid: &Uuid) -> Result<Device, Strin
     let device_text = match reqwest::get(&url).await {
         Ok(response) => match response.text().await {
             Ok(maybe_device_text) => maybe_device_text,
-            Err(_) => return Err("No response or something in get_device_status".to_string()),
+            Err(_) => return Err("No response or nothing in get_device_status".to_string()),
         },
         Err(_) => return Err("No response or something in get_device_status".to_string()),
     };
@@ -80,7 +80,8 @@ async fn get_node_devices(ip: String) -> Option<HashMap<Uuid, LocatedDevice>> {
     let mut located_devices: HashMap<Uuid, LocatedDevice> = HashMap::new();
     if device_json.is_object() {
         for (_, value) in device_json.as_object().unwrap() {
-            let device = Device::from_json(&value.to_string()).unwrap();
+            let device = Device::from_json(&value.to_string())
+                .expect("There was an issue parsing a Device from json.");
             located_devices.insert(
                 device.uuid.clone(),
                 LocatedDevice {
@@ -98,7 +99,7 @@ fn run_nmap() -> String {
         .arg("-sn")
         .arg("192.168.2.0/24")
         .output()
-        .expect("Failed to execute command");
+        .expect("Failed to execute nmap command, perhapse it needs to be installed.");
 
     if output.status.success() {
         String::from_utf8_lossy(&output.stdout).into_owned()
