@@ -35,7 +35,7 @@ const REBOOT_UUID: Uuid = Uuid::from_u128(0xeab109d7537d48bd9ce6041208c42692);
 pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_name: String) {
     let session = bluer::Session::new().await.expect("bluer session issue");
     let adapter = session.default_adapter().await.expect("session adapter issue");
-    adapter.set_powered(true).await.unwrap();
+    adapter.set_powered(true).await.expect("adapter 'set power' issue");
 
     let mut manufacturer_data = BTreeMap::new();
     manufacturer_data.insert(MANUFACTURER_ID, vec![0x21, 0x22, 0x23, 0x24]);
@@ -169,7 +169,7 @@ pub fn generic_read_write_service(
                                     if *shared_ble_command_write_guard == SharedBLECommand::NoUpdate {
                                         *shared_ble_command_write_guard = SharedBLECommand::Command {
                                             device_uuid: service_uuid,
-                                            action: Action::from_u128(char_uuid.as_u128(), target).unwrap(),
+                                            action: Action::from_u128(char_uuid.as_u128(), target).expect("A valid uuid was specifically used!!!!"),
                                         };
                                         break;
                                     }
@@ -244,7 +244,7 @@ pub fn voice_service(
                             eprintln!("Bad device name given");
                             return Ok(());
                         }
-                        let (_name, uuid) = device_id.unwrap();
+                        let (_name, uuid) = device_id.expect("Already exited if not Some");
 
                         let action = match command_iter.next() {
                             Some(&"at") => "set", // for when it hears "at" instead of "set"
@@ -301,7 +301,7 @@ pub fn voice_service(
                                 shared_ble_command_clone.lock().await;
                             if *shared_ble_command_guard == SharedBLECommand::NoUpdate {
                                 *shared_ble_command_guard = SharedBLECommand::Command {
-                                    device_uuid: service_uuid,
+                                    device_uuid: uuid,
                                     action: action.clone(),
                                 };
                                 break;

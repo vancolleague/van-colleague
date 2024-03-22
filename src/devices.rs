@@ -76,10 +76,10 @@ async fn get_node_devices(ip: String) -> Option<HashMap<Uuid, LocatedDevice>> {
         },
         Err(_) => return None,
     };
-    let device_json: Value = serde_json::from_str(device_text.as_str()).unwrap();
+    let device_json: Value = serde_json::from_str(device_text.as_str()).expect("Unless there was an http issue, this seems unrecoverable");
     let mut located_devices: HashMap<Uuid, LocatedDevice> = HashMap::new();
     if device_json.is_object() {
-        for (_, value) in device_json.as_object().unwrap() {
+        for (_, value) in device_json.as_object().expect("Just tested that it's an object") {
             let device = Device::from_json(&value.to_string())
                 .expect("There was an issue parsing a Device from json.");
             located_devices.insert(

@@ -182,9 +182,12 @@ impl Session {
                                     break;
                                 }
                                 if !already_processed {
-                                    let located_device =
-                                        located_devices.get_mut(&device_uuid).unwrap();
-                                    update_device(&located_device.ip, &device_uuid, &action).await;
+                                    match located_devices.get_mut(&device_uuid) {
+                                        Some(located_device) => {
+                                            update_device(&located_device.ip, &device_uuid, &action).await;
+                                        }
+                                        None => {}
+                                    }
                                 }
                                 *shared_ble_command_lock = SBC::NoUpdate;
                             }
@@ -443,7 +446,11 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
         &target,
     );
     println!("{}", &url);
-    reqwest::get(&url).await.expect("reqwest had an issue sending a get request.");
+    match reqwest::get(&url).await {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    //reqwest::get(&url).await.expect("reqwest had an issue sending a get request.");
 }
 
 /// Needed so that the ip and uuid are owned and thus not dropped
