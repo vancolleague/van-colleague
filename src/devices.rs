@@ -26,20 +26,20 @@ pub async fn get_devices() -> HashMap<Uuid, LocatedDevice> {
 
     let mut devices: HashMap<Uuid, LocatedDevice> = HashMap::new();
 
-    let futures: Vec<_> = ips
+    let located_devices_futures: Vec<_> = ips
         .into_iter()
         .map(|ip| tokio::spawn(get_node_devices(ip)))
         .collect();
 
-    let results: Vec<_> = join_all(futures).await;
+    let located_devices_results: Vec<_> = join_all(located_devices_futures).await;
 
-    for result in results {
-        if result.is_ok() {
-            let result = result.expect("Ok was just checked!");
-            if result.is_some() {
-                let result = result.expect("Some was just checked!");
-                for (uuid, located_device) in result {
-                    devices.insert(uuid, located_device);
+    for located_devices_result in located_devices_results {
+        if located_devices_result.is_ok() {
+            let located_devices_result = located_devices_result.expect("Ok was just checked!");
+            if located_devices_result.is_ok() {
+                let located_devices_result = located_devices_result.expect("Was just checked!");
+                for located_device in located_devices_result {
+                    devices.insert(located_device.device.uuid.clone(), located_device);
                 }
             }
         }
@@ -56,42 +56,78 @@ pub async fn get_device_status(ip: &String, uuid: &Uuid) -> Result<Device, Strin
     let device_text = match reqwest::get(&url).await {
         Ok(response) => match response.text().await {
             Ok(maybe_device_text) => maybe_device_text,
-            Err(_) => return Err("No response or nothing in get_device_status".to_string()),
+            Err(_) => {
+                eprintln!("No response or nothing in get_device_status");
+                return Err("No response or nothing in get_device_status".to_string());
+            }
         },
-        Err(_) => return Err("No response or something in get_device_status".to_string()),
+        Err(_) => {
+            eprintln!("No response or something in get_device_status");
+            return Err("No response or something in get_device_status".to_string());
+        }
     };
 
     match Device::from_json(&device_text) {
         Ok(d) => Ok(d),
-        _ => Err("Oops, didn't get the device as expected, apparent IP or name issue".to_string()),
+        _ => {
+            eprintln!(
+                "Oops, didn't get the device as expected, apparent IP or name issue"
+            );
+            Err("Oops, didn't get the device as expected, apparent IP or name issue".to_string())
+        }
     }
 }
 
-async fn get_node_devices(ip: String) -> Option<HashMap<Uuid, LocatedDevice>> {
+//async fn get_node_devices(ip: String) -> Option<HashMap<Uuid, LocatedDevice>> {
+async fn get_node_devices(ip: String) -> Result<Vec<LocatedDevice>, String> {
     let url = format!("http://{}/devices", ip);
-    let device_text = match reqwest::get(&url).await {
+    let devices_text = match reqwest::get(&url).await {
         Ok(response) => match response.text().await {
-            Ok(maybe_device_text) => maybe_device_text,
-            Err(_) => return None,
+            Ok(maybe_devices_text) => maybe_devices_text,
+            Err(_) => {
+                eprintln!("Error with getting the text from reqwest response");
+                return Err("Error with getting the text from reqwest response".to_string());
+            }
         },
-        Err(_) => return None,
+        Err(_) => {
+            eprintln!("Error with reqwest get");
+            return Err("Error with reqwest get".to_string());
+        }
     };
-    let device_json: Value = serde_json::from_str(device_text.as_str()).expect("Unless there was an http issue, this seems unrecoverable");
-    let mut located_devices: HashMap<Uuid, LocatedDevice> = HashMap::new();
-    if device_json.is_object() {
-        for (_, value) in device_json.as_object().expect("Just tested that it's an object") {
-            let device = Device::from_json(&value.to_string())
-                .expect("There was an issue parsing a Device from json.");
-            located_devices.insert(
+    let devices_json: Value = match serde_json::from_str(devices_text.as_str()) {
+        Ok(dj) => dj,
+        Err(_) => {
+            eprintln!("Error with parsing json");
+            return Err("Error with parsing json".to_string());
+        }
+    };
+    let mut located_devices = Vec::new();
+    if devices_json.is_object() {
+        for (_, value) in devices_json
+            .as_object()
+            .expect("Just tested that it's an object")
+        {
+            let device = match Device::from_json(&value.to_string()) {
+                Ok(d) => d,
+                Err(_) => {
+                    eprintln!("Error parsing json");
+                    return Err("Error parsing json".to_string());
+                }
+            };
+            located_devices.push(LocatedDevice {
+                ip: ip.clone(),
+                device,
+            });
+            /*located_devices.insert(
                 device.uuid.clone(),
                 LocatedDevice {
                     device,
                     ip: ip.clone(),
                 },
-            );
+            );*/
         }
     }
-    Some(located_devices)
+    Ok(located_devices)
 }
 
 fn run_nmap() -> String {

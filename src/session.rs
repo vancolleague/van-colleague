@@ -106,7 +106,9 @@ impl Session {
                 /// await a ctl-c command in a spawned thread while the main continues, and one received, exit
                 let port = self.listen_port.to_string();
                 tokio::spawn(async move {
-                    tokio::signal::ctrl_c().await.expect("Issue with tokio ctrl_c stuff");
+                    tokio::signal::ctrl_c()
+                        .await
+                        .expect("Issue with tokio ctrl_c stuff");
                     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Had an issue connecting the ctrl-c watcher to the thread sharing TcpStream");
                     stream
                         .write_all(CLICommand::Shutdown.to_str().as_bytes())
@@ -128,7 +130,7 @@ impl Session {
                                 ref action,
                             } => {
                                 if (&last_action.0, &last_action.1) != (device_uuid, action) {
-                                //if last_action != (device_uuid.clone(), action.clone()) {
+                                    //if last_action != (device_uuid.clone(), action.clone()) {
                                     last_action = (device_uuid.clone(), action.clone());
                                     let located_device = located_devices.get(&device_uuid);
                                     /*let _target = match action.get_value() {
@@ -184,7 +186,12 @@ impl Session {
                                 if !already_processed {
                                     match located_devices.get_mut(&device_uuid) {
                                         Some(located_device) => {
-                                            update_device(&located_device.ip, &device_uuid, &action).await;
+                                            update_device(
+                                                &located_device.ip,
+                                                &device_uuid,
+                                                &action,
+                                            )
+                                            .await;
                                         }
                                         None => {}
                                     }
@@ -202,17 +209,32 @@ impl Session {
                                 rebooter(reboot_args, self.listen_port.to_string());
                             }
                             SBC::TargetInquiry { ref device_uuid } => {
-                                let located_device = located_devices.get(&device_uuid).expect("TargetInquiry had an unfound device_uuid");
-                                let device = get_device_status_helper(
+                                let located_device = match located_devices.get(&device_uuid) {
+                                    Some(located_device) => located_device,
+                                    None => {
+                                        eprintln!("A bad device uuid was received");
+                                        continue;
+                                    }
+                                };
+                                match get_device_status_helper(
                                     located_device.ip.clone(),
                                     device_uuid.clone(),
                                 )
                                 .await
-                                .expect("Had an issue running get_device_status_helper");
-                                println!("response: {:?}, {:?}", &device_uuid, &device);
-                                *shared_ble_command_lock = SBC::TargetResponse {
-                                    target: device.get_target(),
-                                };
+                                {
+                                    Ok(device) => {
+                                        //println!("response: {:?}, {:?}", &device_uuid, &device);
+                                        *shared_ble_command_lock = SBC::TargetResponse {
+                                            target: device.get_target(),
+                                        };
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Had error running get_device_status_helper: {}",
+                                            e
+                                        );
+                                    }
+                                }
                             }
                             SBC::TargetResponse { .. } => {}
                             SBC::NoUpdate => {}
@@ -350,7 +372,11 @@ fn get_node_count(sub_matches: &ArgMatches) -> Option<usize> {
 }
 
 fn rebooter(reboot_args: Vec<String>, listen_port: String) {
-    let exicutable_path = env::current_exe().expect("Issue getting current executable").to_str().expect("Issue converting executable path to str").to_string();
+    let exicutable_path = env::current_exe()
+        .expect("Issue getting current executable")
+        .to_str()
+        .expect("Issue converting executable path to str")
+        .to_string();
     println!("    Reboot args: {}, {:?}", &exicutable_path, reboot_args);
     match Command::new(exicutable_path)
         .args(&reboot_args)
@@ -447,10 +473,9 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
     );
     println!("{}", &url);
     match reqwest::get(&url).await {
-        Ok(_) => {},
-        Err(_) => {},
+        Ok(_) => {}
+        Err(_) => {}
     }
-    //reqwest::get(&url).await.expect("reqwest had an issue sending a get request.");
 }
 
 /// Needed so that the ip and uuid are owned and thus not dropped
