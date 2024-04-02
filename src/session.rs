@@ -130,6 +130,7 @@ impl Session {
                                 ref action,
                             } => {
                                 if (&last_action.0, &last_action.1) != (device_uuid, action) {
+                                    //if last_action != (device_uuid.clone(), action.clone()) {
                                     last_action = (device_uuid.clone(), action.clone());
                                     let located_device = located_devices.get(&device_uuid);
                                     match located_device {
@@ -179,9 +180,17 @@ impl Session {
                                     break;
                                 }
                                 if !already_processed {
-                                    let located_device =
-                                        located_devices.get_mut(&device_uuid).unwrap();
-                                    update_device(&located_device.ip, &device_uuid, &action).await;
+                                    match located_devices.get_mut(&device_uuid) {
+                                        Some(located_device) => {
+                                            update_device(
+                                                &located_device.ip,
+                                                &device_uuid,
+                                                &action,
+                                            )
+                                            .await;
+                                        }
+                                        None => {}
+                                    }
                                 }
                                 *shared_ble_command_lock = SBC::NoUpdate;
                             }
@@ -196,19 +205,32 @@ impl Session {
                                 rebooter(reboot_args, self.listen_port.to_string());
                             }
                             SBC::TargetInquiry { ref device_uuid } => {
-                                let located_device = located_devices
-                                    .get(&device_uuid)
-                                    .expect("TargetInquiry had an unfound device_uuid");
-                                let device = get_device_status_helper(
+                                let located_device = match located_devices.get(&device_uuid) {
+                                    Some(located_device) => located_device,
+                                    None => {
+                                        eprintln!("A bad device uuid was received");
+                                        continue;
+                                    }
+                                };
+                                match get_device_status_helper(
                                     located_device.ip.clone(),
                                     device_uuid.clone(),
                                 )
                                 .await
-                                .expect("Had an issue running get_device_status_helper");
-                                println!("response: {:?}, {:?}", &device_uuid, &device);
-                                *shared_ble_command_lock = SBC::TargetResponse {
-                                    target: device.get_target(),
-                                };
+                                {
+                                    Ok(device) => {
+                                        //println!("response: {:?}, {:?}", &device_uuid, &device);
+                                        *shared_ble_command_lock = SBC::TargetResponse {
+                                            target: device.get_target(),
+                                        };
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Had error running get_device_status_helper: {}",
+                                            e
+                                        );
+                                    }
+                                }
                             }
                             SBC::TargetResponse { .. } => {}
                             SBC::NoUpdate => {}

@@ -38,7 +38,10 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_
         .default_adapter()
         .await
         .expect("session adapter issue");
-    adapter.set_powered(true).await.unwrap();
+    adapter
+        .set_powered(true)
+        .await
+        .expect("adapter 'set power' issue");
 
     let mut manufacturer_data = BTreeMap::new();
     manufacturer_data.insert(MANUFACTURER_ID, vec![0x21, 0x22, 0x23, 0x24]);
@@ -92,12 +95,14 @@ pub fn hub_reboot_service(
                         let text = match std::str::from_utf8(&new_value) {
                             Ok(t) => t,
                             Err(_) => {
+                                eprintln!("had an issue parsing some text");
                                 return Ok(());
                             }
                         };
                         let target: usize = match text.chars().take(1).collect::<String>().parse() {
                             Ok(t) => t,
                             Err(_) => {
+                                eprintln!("had an issue getting the first char");
                                 return Ok(());
                             }
                         };
@@ -183,14 +188,15 @@ pub fn generic_read_write_service(
                                         shared_ble_command_write_clone.lock().await;
                                     if *shared_ble_command_write_guard == SharedBLECommand::NoUpdate
                                     {
+                                        let action =
+                                            match Action::from_u128(char_uuid.as_u128(), target) {
+                                                Ok(a) => a,
+                                                Err(_) => break,
+                                            };
                                         *shared_ble_command_write_guard =
                                             SharedBLECommand::Command {
                                                 device_uuid: service_uuid,
-                                                action: Action::from_u128(
-                                                    char_uuid.as_u128(),
-                                                    target,
-                                                )
-                                                .unwrap(),
+                                                action,
                                             };
                                         break;
                                     }
@@ -265,7 +271,7 @@ pub fn voice_service(
                             eprintln!("Bad device name given");
                             return Ok(());
                         }
-                        let (_name, uuid) = device_id.unwrap();
+                        let (_name, uuid) = device_id.expect("Already exited if not Some");
 
                         let action = match command_iter.next() {
                             Some(&"at") => "set", // for when it hears "at" instead of "set"
@@ -325,7 +331,7 @@ pub fn voice_service(
                                 shared_ble_command_clone.lock().await;
                             if *shared_ble_command_guard == SharedBLECommand::NoUpdate {
                                 *shared_ble_command_guard = SharedBLECommand::Command {
-                                    device_uuid: service_uuid,
+                                    device_uuid: uuid,
                                     action: action.clone(),
                                 };
                                 break;
@@ -345,10 +351,7 @@ pub fn voice_service(
 }
 
 async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLECommand>>) -> usize {
-    println!("Waiting???????????");
-    //let start_time = Instant::now();
-    //let timeout = 10;
-    //   while start_time.elapsed().as_secs() < timeout {
+    //println!("Waiting???????????");
     loop {
         {
             let mut lock = shared_ble_action.lock().await;
@@ -361,9 +364,7 @@ async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLEComman
                 _ => {}
             }
         }
-        //        sleep(Duration::from_millis(9)).await;
     }
-    // 0
 }
 
 fn get_device_ids(
