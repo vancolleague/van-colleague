@@ -94,7 +94,7 @@ impl Session {
                 // TODO: check for bad stuff here
                 self.run_http_server(&located_devices);
 
-                self.start_console_command_sharing(shutdown_flag.clone());
+                self.start_console_command_sharing(shutdown_flag.clone(), located_devices.clone());
 
                 let devices = located_devices
                     .values()
@@ -106,7 +106,9 @@ impl Session {
                 /// await a ctl-c command in a spawned thread while the main continues, and one received, exit
                 let port = self.listen_port.to_string();
                 tokio::spawn(async move {
-                    tokio::signal::ctrl_c().await.expect("Issue with tokio ctrl_c stuff");
+                    tokio::signal::ctrl_c()
+                        .await
+                        .expect("Issue with tokio ctrl_c stuff");
                     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Had an issue connecting the ctrl-c watcher to the thread sharing TcpStream");
                     stream
                         .write_all(CLICommand::Shutdown.to_str().as_bytes())
@@ -128,13 +130,8 @@ impl Session {
                                 ref action,
                             } => {
                                 if (&last_action.0, &last_action.1) != (device_uuid, action) {
-                                //if last_action != (device_uuid.clone(), action.clone()) {
                                     last_action = (device_uuid.clone(), action.clone());
                                     let located_device = located_devices.get(&device_uuid);
-                                    /*let _target = match action.get_value() {
-                                        Some(v) => v.to_string(),
-                                        None => "".to_string(),
-                                    };*/
                                     match located_device {
                                         Some(d) => {
                                             let _ = update_device(&d.ip, &device_uuid, &action);
@@ -199,7 +196,9 @@ impl Session {
                                 rebooter(reboot_args, self.listen_port.to_string());
                             }
                             SBC::TargetInquiry { ref device_uuid } => {
-                                let located_device = located_devices.get(&device_uuid).expect("TargetInquiry had an unfound device_uuid");
+                                let located_device = located_devices
+                                    .get(&device_uuid)
+                                    .expect("TargetInquiry had an unfound device_uuid");
                                 let device = get_device_status_helper(
                                     located_device.ip.clone(),
                                     device_uuid.clone(),
@@ -255,7 +254,11 @@ impl Session {
 
     /// Spawn a thread to handle the TCP server that's userd for sending/receiving commands between
     /// console windows
-    fn start_console_command_sharing(&self, shutdown_flag: Arc<AtomicBool>) {
+    fn start_console_command_sharing(
+        &self,
+        shutdown_flag: Arc<AtomicBool>,
+        located_devices: HashMap<Uuid, LocatedDevice>,
+    ) {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.listen_port.to_string()))
             .expect("Failed to bind to console_command_sharing address");
         tokio::spawn(async move {
@@ -263,7 +266,7 @@ impl Session {
                 match stream {
                     Ok(stream) => {
                         let shutdown_flag_clone = Arc::clone(&shutdown_flag);
-                        cli_handler(stream, shutdown_flag_clone).await;
+                        cli_handler(stream, shutdown_flag_clone, located_devices.clone()).await;
                     }
                     Err(e) => eprintln!("Connection failed: {}", e),
                 }
@@ -347,7 +350,11 @@ fn get_node_count(sub_matches: &ArgMatches) -> Option<usize> {
 }
 
 fn rebooter(reboot_args: Vec<String>, listen_port: String) {
-    let exicutable_path = env::current_exe().expect("Issue getting current executable").to_str().expect("Issue converting executable path to str").to_string();
+    let exicutable_path = env::current_exe()
+        .expect("Issue getting current executable")
+        .to_str()
+        .expect("Issue converting executable path to str")
+        .to_string();
     println!("    Reboot args: {}, {:?}", &exicutable_path, reboot_args);
     match Command::new(exicutable_path)
         .args(&reboot_args)
@@ -429,7 +436,7 @@ async fn get_located_devices(node_count: Option<usize>) -> HashMap<Uuid, Located
     located_devices
 }
 
-async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
+async fn update_device(ip: &String, uuid: &Uuid, action: &Action) -> Result<(), String> {
     let target = match action.get_value() {
         Some(t) => t.to_string(),
         None => "".to_string(),
@@ -443,7 +450,47 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) {
         &target,
     );
     println!("{}", &url);
-    reqwest::get(&url).await.expect("reqwest had an issue sending a get request.");
+    let mut fourhundred = "".to_string();
+    let mut error = None;
+    for _ in 0..4 {
+        match reqwest::get(&url).await {
+            Ok(response) => {
+                if response.is_success() {
+                    return Ok(());
+                }
+                fourhundred= match response.as_u16() {
+                    460 => "Status: request doesn't contain a query",
+                    461 => "Status: bad device name given, it doesn't exist on the node",
+                    462 => "Status: bad device uuid given, it doesn't exist on the node",
+                    463 => "Status: no device name or uuid was given",
+                    470 => "Command: request doesn't contain a query",
+                    471 => "Command: the given target is bad; it's outside of the valid range, 0 thru 7",
+                    472 => "Command: the given target is bad; it can't be parsed to a u32",
+                    473 => "Command: the given action is bad; it can't be parsed",
+                    474 => "Command: no action name was given",
+                    475 => "Command: the given uuid wasn't found among the node's devices",
+                    476 => "Command: the given uuid is bad; it can't be parsed",
+                    477 => "Command: no action name was given",
+                    _ => "Don't know what's wrong, but something is",
+                };
+            }
+            Err(err) => {
+                error = Some(err);
+            }
+        }
+    }
+    if fourhundred.len() > 0 {
+        return Err(fourhundred.to_string());
+    }
+    if let Some(err) = error {
+        eprintln!("{}", &error);
+        if error.is_connect() {}
+        return format!("{}", error);
+    }
+    Ok(())
+    /*reqwest::get(&url)
+    .await
+    .expect("reqwest had an issue sending a get request.");*/
 }
 
 /// Needed so that the ip and uuid are owned and thus not dropped
@@ -451,19 +498,35 @@ async fn get_device_status_helper(ip: String, uuid: Uuid) -> Result<Device, Stri
     devices::get_device_status(&ip, &uuid).await
 }
 
-async fn cli_handler(mut stream: TcpStream, shutdown_flag: Arc<AtomicBool>) {
+async fn cli_handler(
+    mut stream: TcpStream,
+    shutdown_flag: Arc<AtomicBool>,
+    located_devices: HashMap<Uuid, LocatedDevice>,
+) {
     let mut buffer = [0; 1024];
     match stream.read(&mut buffer) {
         Ok(size) => {
+            dbg!(&buffer[..size]);
             let received = String::from_utf8_lossy(&buffer[..size]);
             let received = received.trim();
             let received = CLICommand::from_str(received);
+            dbg!(&received);
             match received {
                 Ok(command) => match command {
                     CLICommand::Shutdown => {
                         shutdown_flag.store(true, Ordering::SeqCst);
                     }
-                    CLICommand::Status => {}
+                    CLICommand::Status => {
+                        println!("Running devices:");
+                        for located_device in located_devices.values() {
+                            print!(
+                                "    ip: {}, uuid: {}, name: {}",
+                                located_device.ip,
+                                located_device.device.uuid,
+                                located_device.device.name
+                            );
+                        }
+                    }
                     CLICommand::Reboot => {
                         shutdown_flag.store(true, Ordering::SeqCst);
                     }

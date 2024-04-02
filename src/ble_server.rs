@@ -34,7 +34,10 @@ const REBOOT_UUID: Uuid = Uuid::from_u128(0xeab109d7537d48bd9ce6041208c42692);
 
 pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_name: String) {
     let session = bluer::Session::new().await.expect("bluer session issue");
-    let adapter = session.default_adapter().await.expect("session adapter issue");
+    let adapter = session
+        .default_adapter()
+        .await
+        .expect("session adapter issue");
     adapter.set_powered(true).await.unwrap();
 
     let mut manufacturer_data = BTreeMap::new();
@@ -46,7 +49,10 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_
         local_name: Some(ble_name),
         ..Default::default()
     };
-    let adv_handle = adapter.advertise(le_advertisement).await.expect("adapter advertiser issue");
+    let adv_handle = adapter
+        .advertise(le_advertisement)
+        .await
+        .expect("adapter advertiser issue");
 
     println!(
         "Serving GATT service on Bluetooth adapter {}",
@@ -57,7 +63,10 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_
         ..Default::default()
     };
 
-    let app_handle = adapter.serve_gatt_application(app).await.expect("Gatt application seriving issue");
+    let app_handle = adapter
+        .serve_gatt_application(app)
+        .await
+        .expect("Gatt application seriving issue");
 
     loop {
         sleep(Duration::from_secs(1000)).await;
@@ -82,13 +91,16 @@ pub fn hub_reboot_service(
                     async move {
                         let text = match std::str::from_utf8(&new_value) {
                             Ok(t) => t,
-                            Err(_) => { return Ok(()); }
+                            Err(_) => {
+                                return Ok(());
+                            }
                         };
-                        let target: usize =
-                            match text.chars().take(1).collect::<String>().parse() {
-                                Ok(t) => t,
-                                Err(_) => { return Ok(()); }
-                            };
+                        let target: usize = match text.chars().take(1).collect::<String>().parse() {
+                            Ok(t) => t,
+                            Err(_) => {
+                                return Ok(());
+                            }
+                        };
                         {
                             let mut shared_ble_command_write_guard =
                                 shared_ble_command_write_clone.lock().await;
@@ -159,18 +171,27 @@ pub fn generic_read_write_service(
                                     match text.chars().take(1).collect::<String>().parse() {
                                         Ok(t) => Some(t),
                                         Err(e) => {
-                                            eprintln!("Bad CharicteristicWrite text received: {}", e);
+                                            eprintln!(
+                                                "Bad CharicteristicWrite text received: {}",
+                                                e
+                                            );
                                             return Ok(());
-                                        },
-                                };
+                                        }
+                                    };
                                 loop {
                                     let mut shared_ble_command_write_guard =
                                         shared_ble_command_write_clone.lock().await;
-                                    if *shared_ble_command_write_guard == SharedBLECommand::NoUpdate {
-                                        *shared_ble_command_write_guard = SharedBLECommand::Command {
-                                            device_uuid: service_uuid,
-                                            action: Action::from_u128(char_uuid.as_u128(), target).unwrap(),
-                                        };
+                                    if *shared_ble_command_write_guard == SharedBLECommand::NoUpdate
+                                    {
+                                        *shared_ble_command_write_guard =
+                                            SharedBLECommand::Command {
+                                                device_uuid: service_uuid,
+                                                action: Action::from_u128(
+                                                    char_uuid.as_u128(),
+                                                    target,
+                                                )
+                                                .unwrap(),
+                                            };
                                         break;
                                     }
                                     sleep(Duration::from_millis(3)).await;
@@ -209,7 +230,7 @@ pub fn voice_service(
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     println!("voice received");
                     let shared_ble_command_clone = shared_ble_command.clone();
-                    let device_ids= devices
+                    let device_ids = devices
                         .iter()
                         .map(|d| (d.name.clone(), d.uuid.clone()))
                         .collect::<HashMap<String, Uuid>>();
@@ -223,7 +244,7 @@ pub fn voice_service(
                             Err(e) => {
                                 eprintln!("Bad voice command received: {}", e);
                                 return Ok(());
-                            },
+                            }
                         };
                         let command = command
                             .trim_end()
@@ -249,8 +270,9 @@ pub fn voice_service(
                         let action = match command_iter.next() {
                             Some(&"at") => "set", // for when it hears "at" instead of "set"
                             Some(a) => a,
-                            None => { return Ok(()); }
-                            //None => panic!("failed to get an action"), //return HttpResponse::Ok().body("Oops, we didn't get an action!"),
+                            None => {
+                                return Ok(());
+                            } //None => panic!("failed to get an action"), //return HttpResponse::Ok().body("Oops, we didn't get an action!"),
                         };
                         let target = match command_iter.next() {
                             Some(t) => {
@@ -284,7 +306,9 @@ pub fn voice_service(
                                         &"seven" => 7,
                                         &"7" => 7,
                                         &"7:00" => 7,
-                                        _ => { return Ok(()); }
+                                        _ => {
+                                            return Ok(());
+                                        }
                                     };
                                     Some(target)
                                 }
@@ -294,7 +318,7 @@ pub fn voice_service(
 
                         let action = match Action::from_str(action, target) {
                             Ok(a) => a,
-                            Err(_) => return Ok(())
+                            Err(_) => return Ok(()),
                         };
                         loop {
                             let mut shared_ble_command_guard =
@@ -355,11 +379,15 @@ fn get_device_ids(
     let mut found_device_name = "".to_string();
     while next_command_word.is_some() {
         if group_names.keys().any(|n| n == &partial_device_name) {
-        //if device_names.contains(&&device_name.to_string()) {
+            //if device_names.contains(&&device_name.to_string()) {
             found_device_name = partial_device_name;
             break;
         }
-        partial_device_name = format!("{} {}", partial_device_name, next_command_word.expect("This value checked in while loop"));
+        partial_device_name = format!(
+            "{} {}",
+            partial_device_name,
+            next_command_word.expect("This value checked in while loop")
+        );
         command_words.next();
         next_command_word = command_words.peek();
     }
@@ -368,7 +396,7 @@ fn get_device_ids(
         Some(u) => Some((found_device_name, u.clone())),
         None => None,
     }
-   /* 
+    /*
     if found_device_name == "".to_string() {
         return None;
     }
