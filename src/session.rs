@@ -17,7 +17,9 @@ use crate::ble_server;
 use crate::cli_command::CLICommand;
 use crate::devices::{self, LocatedDevice};
 use crate::http_server;
-use crate::thread_sharing::{SharedBLECommand, SharedConfig, SharedGetRequest};
+use crate::thread_sharing::{
+    SharedBLECommand, SharedBLERead, SharedBLEWrite, SharedConfig, SharedGetRequest,
+};
 use device::{Action, Device, DEVICE_GROUPS};
 
 const VOICE_UUID: Uuid = Uuid::from_u128(0x7e1be1ebf9844e17b0f1049e02a39567);
@@ -27,9 +29,11 @@ const LOCK_FILE_NAME: &'static str = "hub_app.lock";
 pub struct Session {
     pub ble_name: String,
     pub listen_port: u16,
-    pub reboot_wait: usize,
+    pub restart_wait: usize,
     pub shared_get_request: Arc<Mutex<SharedGetRequest>>,
     pub shared_ble_command: Arc<Mutex<SharedBLECommand>>,
+    pub shared_ble_read: Arc<Mutex<SharedBLERead>>,
+    pub shared_ble_write: Arc<Mutex<SharedBLEWrite>>,
 }
 
 impl Default for Session {
@@ -37,19 +41,21 @@ impl Default for Session {
         Self {
             ble_name: "VanColleague".to_string(),
             listen_port: 4000,
-            reboot_wait: 10,
+            restart_wait: 10,
             shared_get_request: Arc::new(Mutex::new(SharedGetRequest::NoUpdate)),
             shared_ble_command: Arc::new(Mutex::new(SharedBLECommand::NoUpdate)),
+            shared_ble_read: Arc::new(Mutex::new(SharedBLERead::NoUpdate)),
+            shared_ble_write: Arc::new(Mutex::new(SharedBLEWrite::NoUpdate)),
         }
     }
 }
 
 impl Session {
-    fn new(ble_name: String, listen_port: u16, reboot_wait: usize) -> Self {
+    fn new(ble_name: String, listen_port: u16, restart_wait: usize) -> Self {
         Self {
             ble_name,
             listen_port,
-            reboot_wait,
+            restart_wait,
             ..Default::default()
         }
     }
@@ -64,27 +70,27 @@ impl Session {
                 match CLICommand::from_str(command) {
                     Ok(c) => c,
                     Err(_) => {
-                        eprintln!("You must enter a command, perhapse you wanted:");
-                        eprintln!("  > hub run");
-                        eprintln!("or");
-                        eprintln!("  > hub help");
+                        println!("You must enter a command, perhapse you wanted:");
+                        println!("  > hub start");
+                        println!("or");
+                        println!("  > hub help");
                         process::exit(1);
                     }
                 }
             }
             _ => {
-                eprintln!("You must enter a command, perhapse you wanted:");
-                eprintln!("  > hub run");
-                eprintln!("or");
-                eprintln!("  > hub help");
+                println!("You must enter a command, perhapse you wanted:");
+                println!("  > hub start");
+                println!("or");
+                println!("  > hub help");
                 process::exit(1);
             }
         };
         match parsed_cli_command {
-            CLICommand::Run => {
+            CLICommand::Start => {
                 wait_to_start(&sub_matches);
 
-                let shutdown_flag = Arc::new(AtomicBool::new(false));
+                let stop_flag = Arc::new(AtomicBool::new(false));
 
                 self.test_for_other_instances();
                 //setup_lock_file();
@@ -94,13 +100,18 @@ impl Session {
                 // TODO: check for bad stuff here
                 self.run_http_server(&located_devices);
 
-                self.start_console_command_sharing(shutdown_flag.clone(), located_devices.clone());
+                self.start_console_command_sharing(stop_flag.clone(), located_devices.clone());
 
                 let devices = located_devices
                     .values()
                     .map(|ld| ld.device.clone())
                     .collect::<Vec<Device>>();
-                let services = get_ble_services(devices, self.shared_ble_command.clone());
+                let services = get_ble_services(
+                    devices,
+                    self.shared_ble_command.clone(),
+                    self.shared_ble_read.clone(),
+                    self.shared_ble_write.clone(),
+                );
                 self.run_ble_server(VOICE_UUID, services);
 
                 /// await a ctl-c command in a spawned thread while the main continues, and one received, exit
@@ -111,16 +122,14 @@ impl Session {
                         .expect("Issue with tokio ctrl_c stuff");
                     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Had an issue connecting the ctrl-c watcher to the thread sharing TcpStream");
                     stream
-                        .write_all(CLICommand::Shutdown.to_str().as_bytes())
-                        .expect(
-                            "Had an issue writing the ctrl-c shutdown command to the TcpStream",
-                        );
+                        .write_all(CLICommand::Stop.to_str().as_bytes())
+                        .expect("Had an issue writing the ctrl-c stop command to the TcpStream");
                     process::exit(0);
                 });
 
                 // business logic
                 let mut last_action = (Uuid::from_u128(0x0), Action::On);
-                while !shutdown_flag.load(Ordering::SeqCst) {
+                while !stop_flag.load(Ordering::SeqCst) {
                     {
                         use SharedGetRequest as SGR;
                         let mut shared_get_request_lock = self.shared_get_request.lock().await;
@@ -130,7 +139,6 @@ impl Session {
                                 ref action,
                             } => {
                                 if (&last_action.0, &last_action.1) != (device_uuid, action) {
-                                    //if last_action != (device_uuid.clone(), action.clone()) {
                                     last_action = (device_uuid.clone(), action.clone());
                                     let located_device = located_devices.get(&device_uuid);
                                     match located_device {
@@ -151,7 +159,64 @@ impl Session {
                         use SharedBLECommand as SBC;
                         let mut shared_ble_command_lock = self.shared_ble_command.lock().await;
                         match &*shared_ble_command_lock {
-                            SBC::Command {
+                            SBC::Restart { ref node_count } => {
+                                let mut restart_args = vec!["start".to_string()];
+                                if *node_count > 0 {
+                                    restart_args.push("-c".to_string());
+                                    restart_args.push(node_count.to_string());
+                                }
+                                restart_args.push("-w".to_string());
+                                restart_args.push("10".to_string());
+                                restarter(restart_args, self.listen_port.to_string());
+                            }
+                            SBC::NoUpdate => {}
+                        }
+                    }
+                    {
+                        use SharedBLERead as SBR;
+                        let mut shared_ble_read_lock = self.shared_ble_read.lock().await;
+                        match &*shared_ble_read_lock {
+                            SBR::Inquiry { ref device_uuid } => {
+                                let located_device = match located_devices.get(&device_uuid) {
+                                    Some(located_device) => located_device,
+                                    None => {
+                                        eprintln!(
+                                            "{}: A bad device uuid was received",
+                                            Local::now().format("%Y-%m-%d %H:%M:%S")
+                                        );
+                                        continue;
+                                    }
+                                };
+                                match get_device_status_helper(
+                                    located_device.ip.clone(),
+                                    device_uuid.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(device) => {
+                                        //println!("response: {:?}, {:?}", &device_uuid, &device);
+                                        *shared_ble_read_lock = SBR::Response {
+                                            target: device.get_target(),
+                                        };
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "{}: Had error running get_device_status_helper: {}",
+                                            Local::now().format("%Y-%m-%d %H:%M:%S"),
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            SBR::Response { .. } => {}
+                            SBR::NoUpdate => {}
+                        }
+                    }
+                    {
+                        use SharedBLEWrite as SBW;
+                        let mut shared_ble_write_lock = self.shared_ble_write.lock().await;
+                        match &*shared_ble_write_lock {
+                            SBW::Command {
                                 ref device_uuid,
                                 ref action,
                             } => {
@@ -168,7 +233,7 @@ impl Session {
                                             == Some(device_group.device_group)
                                         {
                                             // TODO: seems like updates could be made in parallel
-                                            update_device(
+                                            let _ = update_device(
                                                 &located_device.ip,
                                                 &device_uuid,
                                                 &action,
@@ -182,7 +247,7 @@ impl Session {
                                 if !already_processed {
                                     match located_devices.get_mut(&device_uuid) {
                                         Some(located_device) => {
-                                            update_device(
+                                            let _ = update_device(
                                                 &located_device.ip,
                                                 &device_uuid,
                                                 &action,
@@ -192,64 +257,26 @@ impl Session {
                                         None => {}
                                     }
                                 }
-                                *shared_ble_command_lock = SBC::NoUpdate;
+                                *shared_ble_write_lock = SBW::NoUpdate;
                             }
-                            SBC::Reboot { ref node_count } => {
-                                let mut reboot_args = vec!["run".to_string()];
-                                if *node_count > 0 {
-                                    reboot_args.push("-c".to_string());
-                                    reboot_args.push(node_count.to_string());
-                                }
-                                reboot_args.push("-w".to_string());
-                                reboot_args.push("10".to_string());
-                                rebooter(reboot_args, self.listen_port.to_string());
-                            }
-                            SBC::TargetInquiry { ref device_uuid } => {
-                                let located_device = match located_devices.get(&device_uuid) {
-                                    Some(located_device) => located_device,
-                                    None => {
-                                        eprintln!("A bad device uuid was received");
-                                        continue;
-                                    }
-                                };
-                                match get_device_status_helper(
-                                    located_device.ip.clone(),
-                                    device_uuid.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(device) => {
-                                        //println!("response: {:?}, {:?}", &device_uuid, &device);
-                                        *shared_ble_command_lock = SBC::TargetResponse {
-                                            target: device.get_target(),
-                                        };
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "Had error running get_device_status_helper: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                            SBC::TargetResponse { .. } => {}
-                            SBC::NoUpdate => {}
+                            SBW::Response { .. } => {}
+                            SBW::NoUpdate => {}
                         }
                     }
                     std::thread::sleep(Duration::from_millis(10));
                 }
 
-                println!("Shutdown!!!!!!!!");
+                println!("Stop!!!!!!!!");
                 process::exit(0);
             }
-            CLICommand::Shutdown => {
+            CLICommand::Stop => {
                 println!("Shutting down the program!!!");
                 let mut stream =
                     TcpStream::connect(format!("127.0.0.1:{}", self.listen_port.to_string()))
-                        .expect("Issue connecting to TcpStream for shutdown");
+                        .expect("Issue connecting to TcpStream for stop");
                 stream
-                    .write_all(CLICommand::Shutdown.to_str().as_bytes())
-                    .expect("Issue writing shutdown command to stream");
+                    .write_all(CLICommand::Stop.to_str().as_bytes())
+                    .expect("Issue writing stop command to stream");
                 process::exit(0);
             }
             CLICommand::Status => {
@@ -266,10 +293,10 @@ impl Session {
                     }
                 }
             }
-            CLICommand::Reboot => {
-                println!("Rebooting...");
-                let reboot_args = self.get_reboot_args(&sub_matches);
-                rebooter(reboot_args, self.listen_port.clone().to_string());
+            CLICommand::Restart => {
+                println!("Restarting...");
+                let restart_args = self.get_restart_args(&sub_matches);
+                restarter(restart_args, self.listen_port.clone().to_string());
             }
         }
     }
@@ -278,7 +305,7 @@ impl Session {
     /// console windows
     fn start_console_command_sharing(
         &self,
-        shutdown_flag: Arc<AtomicBool>,
+        stop_flag: Arc<AtomicBool>,
         located_devices: HashMap<Uuid, LocatedDevice>,
     ) {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.listen_port.to_string()))
@@ -287,10 +314,14 @@ impl Session {
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
-                        let shutdown_flag_clone = Arc::clone(&shutdown_flag);
-                        cli_handler(stream, shutdown_flag_clone, located_devices.clone()).await;
+                        let stop_flag_clone = Arc::clone(&stop_flag);
+                        cli_handler(stream, stop_flag_clone, located_devices.clone()).await;
                     }
-                    Err(e) => eprintln!("Connection failed: {}", e),
+                    Err(e) => eprintln!(
+                        "{}: Connection failed: {}",
+                        Local::now().format("%Y-%m-%d %H:%M:%S"),
+                        e
+                    ),
                 }
             }
         });
@@ -320,7 +351,7 @@ impl Session {
         );
     }
 
-    fn get_reboot_args(&self, sub_matches: &ArgMatches) -> Vec<String> {
+    fn get_restart_args(&self, sub_matches: &ArgMatches) -> Vec<String> {
         let mut args = Vec::new();
 
         args.push("run".to_string());
@@ -338,7 +369,7 @@ impl Session {
         }
 
         args.push("-w".to_string());
-        args.push(self.reboot_wait.to_string());
+        args.push(self.restart_wait.to_string());
 
         args
     }
@@ -363,7 +394,10 @@ fn get_node_count(sub_matches: &ArgMatches) -> Option<usize> {
         Some(count) => match count.parse() {
             Ok(nc) => Some(nc),
             Err(_) => {
-                eprintln!("An invalid -node-count was entered, it must be a posative integer");
+                eprintln!(
+                    "{}: An invalid -node-count was entered, it must be a posative integer",
+                    Local::now().format("%Y-%m-%d %H:%M:%S")
+                );
                 process::exit(1);
             }
         },
@@ -371,30 +405,34 @@ fn get_node_count(sub_matches: &ArgMatches) -> Option<usize> {
     }
 }
 
-fn rebooter(reboot_args: Vec<String>, listen_port: String) {
+fn restarter(restart_args: Vec<String>, listen_port: String) {
     let exicutable_path = env::current_exe()
         .expect("Issue getting current executable")
         .to_str()
         .expect("Issue converting executable path to str")
         .to_string();
-    println!("    Reboot args: {}, {:?}", &exicutable_path, reboot_args);
+    println!("    Restart args: {}, {:?}", &exicutable_path, restart_args);
     match Command::new(exicutable_path)
-        .args(&reboot_args)
+        .args(&restart_args)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
     {
-        Ok(_) => println!("        Reboot command issued successfully."),
-        Err(e) => eprintln!("        Failed to issue reboot command: {}", e),
+        Ok(_) => println!("        Restart command issued successfully."),
+        Err(e) => eprintln!(
+            "        {}: Failed to issue restart command: {}",
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            e
+        ),
     }
     match TcpStream::connect(format!("127.0.0.1:{}", listen_port)) {
         Ok(mut stream) => {
             stream
-                .write_all(CLICommand::Reboot.to_str().as_bytes())
-                .expect("Issue writing reboot info to stream");
+                .write_all(CLICommand::Restart.to_str().as_bytes())
+                .expect("Issue writing restart info to stream");
         }
         Err(_) => {
-            println!("    Oops, something went wrong while rebooting...");
+            println!("    Oops, something went wrong while restarting...");
         }
     }
     process::exit(0);
@@ -403,6 +441,8 @@ fn rebooter(reboot_args: Vec<String>, listen_port: String) {
 fn get_ble_services(
     devices: Vec<Device>,
     shared_ble_command: Arc<Mutex<SharedBLECommand>>,
+    shared_ble_read: Arc<Mutex<SharedBLERead>>,
+    shared_ble_write: Arc<Mutex<SharedBLEWrite>>,
 ) -> Vec<Service> {
     let mut ble_services = Vec::new();
     let mut set_as_primary = true;
@@ -410,18 +450,19 @@ fn get_ble_services(
         ble_services.push(ble_server::generic_read_write_service(
             device.uuid,
             Action::Set(0).to_uuid(),
-            shared_ble_command.clone(),
+            shared_ble_read.clone(),
+            shared_ble_write.clone(),
             set_as_primary,
         ));
     }
 
     ble_services.push(ble_server::voice_service(
         VOICE_UUID,
-        shared_ble_command.clone(),
+        shared_ble_write.clone(),
         devices.clone(),
     ));
 
-    ble_services.push(ble_server::hub_reboot_service(
+    ble_services.push(ble_server::hub_restart_service(
         shared_ble_command.clone(),
         true,
     ));
@@ -458,7 +499,7 @@ async fn get_located_devices(node_count: Option<usize>) -> HashMap<Uuid, Located
     located_devices
 }
 
-async fn update_device(ip: &String, uuid: &Uuid, action: &Action) -> Result<(), String> {
+async fn update_device(ip: &String, uuid: &Uuid, action: &Action) -> Result<u16, String> {
     let target = match action.get_value() {
         Some(t) => t.to_string(),
         None => "".to_string(),
@@ -472,12 +513,16 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) -> Result<(), 
         &target,
     );
     println!("{}", &url);
-    let mut fourhundred = "".to_string();
+    let mut code = 0;
     let mut error = None;
     for _ in 0..4 {
         match reqwest::get(&url).await {
             Ok(response) => {
-                if response.is_success() {
+                code = response.status().as_u16();
+                if 200 <= code && code < 300 {
+                    return Ok(code);
+                }
+                /*if response.status().as_u16() {
                     return Ok(());
                 }
                 fourhundred= match response.as_u16() {
@@ -494,22 +539,26 @@ async fn update_device(ip: &String, uuid: &Uuid, action: &Action) -> Result<(), 
                     476 => "Command: the given uuid is bad; it can't be parsed",
                     477 => "Command: no action name was given",
                     _ => "Don't know what's wrong, but something is",
-                };
+                };*/
             }
             Err(err) => {
                 error = Some(err);
             }
         }
     }
-    if fourhundred.len() > 0 {
+    if code != 0 {
+        return Ok(code);
+    }
+    /*if fourhundred.len() > 0 {
         return Err(fourhundred.to_string());
+    }*/
+    if let Some(ref err) = error {
+        eprintln!("{}: {:?}", Local::now().format("%Y-%m-%d %H:%M:%S"), &error);
+        //if error.is_connect() {}
+        return Err(format!("{:?}", error));
     }
-    if let Some(err) = error {
-        eprintln!("{}", &error);
-        if error.is_connect() {}
-        return format!("{}", error);
-    }
-    Ok(())
+    Ok(0)
+    //Ok(())
     /*reqwest::get(&url)
     .await
     .expect("reqwest had an issue sending a get request.");*/
@@ -522,7 +571,7 @@ async fn get_device_status_helper(ip: String, uuid: Uuid) -> Result<Device, Stri
 
 async fn cli_handler(
     mut stream: TcpStream,
-    shutdown_flag: Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
     located_devices: HashMap<Uuid, LocatedDevice>,
 ) {
     let mut buffer = [0; 1024];
@@ -535,8 +584,11 @@ async fn cli_handler(
             dbg!(&received);
             match received {
                 Ok(command) => match command {
-                    CLICommand::Shutdown => {
-                        shutdown_flag.store(true, Ordering::SeqCst);
+                    CLICommand::Start => {
+                        // Shouldn't ever get here
+                    }
+                    CLICommand::Stop => {
+                        stop_flag.store(true, Ordering::SeqCst);
                     }
                     CLICommand::Status => {
                         println!("Running devices:");
@@ -549,21 +601,26 @@ async fn cli_handler(
                             );
                         }
                     }
-                    CLICommand::Reboot => {
-                        shutdown_flag.store(true, Ordering::SeqCst);
-                    }
-                    CLICommand::Run => {
-                        // Shouldn't ever get here
+                    CLICommand::Restart => {
+                        stop_flag.store(true, Ordering::SeqCst);
                     }
                 },
                 Err(e) => {
-                    eprintln!("A bad command was sceemingly sent: {}", e);
+                    eprintln!(
+                        "{}: A bad command was sceemingly sent: {}",
+                        Local::now().format("%Y-%m-%d %H:%M:%S"),
+                        e
+                    );
                     // TODO: can this branch be replaced
                     // with a expect? maybe if the previous thing checked
                 }
             }
         }
-        Err(e) => eprintln!("Failed to receive data: {}", e),
+        Err(e) => eprintln!(
+            "{}: Failed to receive data: {}",
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            e
+        ),
     }
 }
 
@@ -572,7 +629,11 @@ fn setup_lock_file() {
     let exe_path = match env::current_exe() {
         Ok(exe) => exe,
         Err(e) => {
-            eprintln!("Failed to determine current directory: {}", e);
+            eprintln!(
+                "{}: Failed to determine current directory: {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                e
+            );
             process::exit(1);
         }
     };
@@ -585,14 +646,21 @@ fn setup_lock_file() {
     let file = match File::create(&lock_path) {
         Ok(file) => file,
         Err(e) => {
-            eprintln!("Failed to create lock file: {}", e);
+            eprintln!(
+                "{}: Failed to create lock file: {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                e
+            );
             process::exit(1);
         }
     };
 
     // Try to acquire an exclusive lock
     if file.try_lock_exclusive().is_err() {
-        eprintln!("Another instance of the application is already running.");
+        eprintln!(
+            "{}: Another instance of the application is already running.",
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
         process::exit(1);
     }
 }
@@ -602,7 +670,11 @@ fn check_for_lock_file() -> bool {
     let current_dir = match env::current_dir() {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("Failed to determine current directory: {}", e);
+            eprintln!(
+                "{}: Failed to determine current directory: {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                e
+            );
             process::exit(1);
         }
     };
@@ -623,7 +695,7 @@ fn wait_to_start(sub_matches: &ArgMatches) {
     let wait_time = match wait_time.parse() {
         Ok(wt) => wt,
         Err(_) => {
-            eprintln!("You specified that you want to wait to start but you didn't include a positive integer value");
+            eprintln!("{}: You specified that you want to wait to start but you didn't include a positive integer value", Local::now().format("%Y-%m-%d %H:%M:%S"));
             process::exit(1);
         }
     };
@@ -636,8 +708,8 @@ pub fn get_user_args() -> clap::Command {
         .author("Chad DeRosier, <chad.derosier@tutanota.com>")
         .about("Runs van automation stuff.")
         .subcommand(
-            ClapCommand::new("run")
-                .about("Runs the application") // ... additional settings or arguments specific to "run" ...
+            ClapCommand::new("start")
+                .about("Starts the application") // ... additional settings or arguments specific to "run" ...
                 .arg(
                     Arg::new("node-count")
                         .short('c')
@@ -654,8 +726,8 @@ pub fn get_user_args() -> clap::Command {
                 ),
         )
         .subcommand(
-            ClapCommand::new("reboot")
-                .about("Reboots the main node")
+            ClapCommand::new("restart")
+                .about("Restarts the main node")
                 .arg(
                     Arg::new("node-count")
                         .short('c')
@@ -664,7 +736,7 @@ pub fn get_user_args() -> clap::Command {
                         .help("Set the number of nodes to look for."),
                 )
         )
-        .subcommand(ClapCommand::new("shutdown").about("Shutdown's the program and it's it all down"))
+        .subcommand(ClapCommand::new("stop").about("Stop's the program and it's it all down"))
         .subcommand(ClapCommand::new("status").about("Shows some basic status info"))
         .arg(
             Arg::new("log_level")
@@ -709,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_get_reboot_args() {
+    fn helper_get_restart_args() {
         let session = Session {
             ..Default::default()
         };
@@ -717,7 +789,7 @@ mod tests {
         let args = get_user_args().get_matches_from(simulated_args);
         let (_, sub_args) = args.subcommand().unwrap();
         assert_eq!(
-            session.get_reboot_args(sub_args),
+            session.get_restart_args(sub_args),
             vec!["run", "-c", "1", "-w", "10"]
         );
 
@@ -725,7 +797,7 @@ mod tests {
         let args = get_user_args().get_matches_from(simulated_args);
         let (_, sub_args) = args.subcommand().unwrap();
         assert_eq!(
-            session.get_reboot_args(sub_args),
+            session.get_restart_args(sub_args),
             vec!["run", "-c", "2", "-w", "10"]
         );
     }

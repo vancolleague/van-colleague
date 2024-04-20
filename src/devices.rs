@@ -2,9 +2,9 @@ use futures::future::join_all;
 use std::collections::HashMap;
 use std::process::Command;
 
-use regex::Regex;
-
 use bluer::Uuid;
+use chrono::Local;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -57,12 +57,18 @@ pub async fn get_device_status(ip: &String, uuid: &Uuid) -> Result<Device, Strin
         Ok(response) => match response.text().await {
             Ok(maybe_device_text) => maybe_device_text,
             Err(_) => {
-                eprintln!("No response or nothing in get_device_status");
+                eprintln!(
+                    "{}: No response or nothing in get_device_status",
+                    Local::now().format("%Y-%m-%d %H:%M:%S")
+                );
                 return Err("No response or nothing in get_device_status".to_string());
             }
         },
         Err(_) => {
-            eprintln!("No response or something in get_device_status");
+            eprintln!(
+                "{}: No response or something in get_device_status",
+                Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
             return Err("No response or something in get_device_status".to_string());
         }
     };
@@ -71,7 +77,8 @@ pub async fn get_device_status(ip: &String, uuid: &Uuid) -> Result<Device, Strin
         Ok(d) => Ok(d),
         _ => {
             eprintln!(
-                "Oops, didn't get the device as expected, apparent IP or name issue"
+                "{}: Oops, didn't get the device as expected, apparent IP or name issue",
+                Local::now().format("%Y-%m-%d %H:%M:%S")
             );
             Err("Oops, didn't get the device as expected, apparent IP or name issue".to_string())
         }
@@ -85,19 +92,28 @@ async fn get_node_devices(ip: String) -> Result<Vec<LocatedDevice>, String> {
         Ok(response) => match response.text().await {
             Ok(maybe_devices_text) => maybe_devices_text,
             Err(_) => {
-                eprintln!("Error with getting the text from reqwest response");
+                eprintln!(
+                    "{}: Error with getting the text from reqwest response",
+                    Local::now().format("%Y-%m-%d %H:%M:%S")
+                );
                 return Err("Error with getting the text from reqwest response".to_string());
             }
         },
         Err(_) => {
-            eprintln!("Error with reqwest get");
+            eprintln!(
+                "{}: Error with reqwest get",
+                Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
             return Err("Error with reqwest get".to_string());
         }
     };
     let devices_json: Value = match serde_json::from_str(devices_text.as_str()) {
         Ok(dj) => dj,
         Err(_) => {
-            eprintln!("Error with parsing json");
+            eprintln!(
+                "{}: Error with parsing json",
+                Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
             return Err("Error with parsing json".to_string());
         }
     };
@@ -110,7 +126,10 @@ async fn get_node_devices(ip: String) -> Result<Vec<LocatedDevice>, String> {
             let device = match Device::from_json(&value.to_string()) {
                 Ok(d) => d,
                 Err(_) => {
-                    eprintln!("Error parsing json");
+                    eprintln!(
+                        "{}: Error parsing json",
+                        Local::now().format("%Y-%m-%d %H:%M:%S")
+                    );
                     return Err("Error parsing json".to_string());
                 }
             };

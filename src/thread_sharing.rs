@@ -17,18 +17,25 @@ pub enum SharedGetRequest {
 
 #[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
 pub enum SharedBLECommand {
+    Restart { node_count: usize },
+    NoUpdate,
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
+pub enum SharedBLERead {
+    Inquiry { device_uuid: Uuid },
+    Response { target: usize },
+    NoUpdate,
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
+pub enum SharedBLEWrite {
     Command {
         device_uuid: Uuid,
         action: device::Action,
     },
-    Reboot {
-        node_count: usize,
-    },
-    TargetInquiry {
-        device_uuid: Uuid,
-    },
-    TargetResponse {
-        target: usize,
+    Response {
+        message: u16,
     },
     NoUpdate,
 }

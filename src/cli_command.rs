@@ -9,29 +9,29 @@ struct CLICommandSynonym {
 
 const CLI_COMMANDS: [CLICommandSynonym; 4] = [
     CLICommandSynonym {
-        cli_command: CLICommand::Run,
-        text: "run",
+        cli_command: CLICommand::Start,
+        text: "start",
     },
     CLICommandSynonym {
-        cli_command: CLICommand::Shutdown,
-        text: "shutdown",
+        cli_command: CLICommand::Stop,
+        text: "stop",
     },
     CLICommandSynonym {
         cli_command: CLICommand::Status,
         text: "status",
     },
     CLICommandSynonym {
-        cli_command: CLICommand::Reboot,
-        text: "reboot",
+        cli_command: CLICommand::Restart,
+        text: "restart",
     },
 ];
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum CLICommand {
-    Run,
-    Shutdown,
+    Start,
+    Stop,
     Status,
-    Reboot,
+    Restart,
 }
 
 impl CLICommand {
@@ -75,12 +75,12 @@ mod tests {
     fn cli_command_same_variant() {
         use CLICommand as C;
 
-        let one = C::Run;
-        let two = C::Run;
+        let one = C::Start;
+        let two = C::Start;
         assert!(one.same_variant(&two));
 
-        let three = C::Run;
-        let four = C::Reboot;
+        let three = C::Start;
+        let four = C::Restart;
         assert!(!three.same_variant(&four));
     }
 
@@ -88,18 +88,18 @@ mod tests {
     fn cli_command_from_str() {
         use CLICommand as C;
 
-        let text = "run";
+        let text = "start";
         let cli_command = C::from_str(text);
-        assert_eq!(cli_command, Ok(C::Run));
+        assert_eq!(cli_command, Ok(C::Start));
 
-        let text = "Run";
+        let text = "Start";
         let cli_command = C::from_str(text);
-        assert_eq!(cli_command, Ok(C::Run));
+        assert_eq!(cli_command, Ok(C::Start));
     }
 
     #[test]
     fn cli_command_to_str() {
-        let text = "run";
-        assert_eq!(text, CLICommand::Run.to_str());
+        let text = "start";
+        assert_eq!(text, CLICommand::Start.to_str());
     }
 }

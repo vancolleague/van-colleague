@@ -11,7 +11,7 @@ use bluer::{
     adv::Advertisement,
     gatt::local::{
         Application, Characteristic, CharacteristicRead, CharacteristicWrite,
-        CharacteristicWriteMethod, Service,
+        CharacteristicWriteMethod, CharacteristicWriteRequest, Service,
     },
     Uuid,
 };
@@ -30,7 +30,8 @@ use crate::thread_sharing::*;
 const MANUFACTURER_ID: u16 = 0x45F1;
 
 const HUB_UUID: Uuid = Uuid::from_u128(0x0da6f72304f342818b4827c89c208284);
-const REBOOT_UUID: Uuid = Uuid::from_u128(0xeab109d7537d48bd9ce6041208c42692);
+
+const RESTART_UUID: Uuid = Uuid::from_u128(0xeab109d7537d48bd9ce6041208c42692);
 
 pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_name: String) {
     let session = bluer::Session::new().await.expect("bluer session issue");
@@ -76,41 +77,47 @@ pub async fn run_ble_server(advertising_uuid: Uuid, services: Vec<Service>, ble_
     }
 }
 
-pub fn hub_reboot_service(
+pub fn hub_restart_service(
     shared_ble_command: Arc<Mutex<SharedBLECommand>>,
     primary: bool,
 ) -> Service {
-    let shared_ble_command_write = Arc::clone(&shared_ble_command);
+    //let shared_ble_command = Arc::clone(&shared_ble_command);
     Service {
         uuid: HUB_UUID,
         primary,
         characteristics: vec![Characteristic {
-            uuid: REBOOT_UUID,
+            uuid: RESTART_UUID,
             write: Some(CharacteristicWrite {
                 write: true,
                 write_without_response: true,
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
-                    let shared_ble_command_write_clone = shared_ble_command_write.clone();
+                    let shared_ble_command_clone = shared_ble_command.clone();
                     async move {
                         let text = match std::str::from_utf8(&new_value) {
                             Ok(t) => t,
                             Err(_) => {
-                                eprintln!("had an issue parsing some text");
+                                eprintln!(
+                                    "{}: had an issue parsing some text",
+                                    Local::now().format("%Y-%m-%d %H:%M:%S")
+                                );
                                 return Ok(());
                             }
                         };
                         let target: usize = match text.chars().take(1).collect::<String>().parse() {
                             Ok(t) => t,
                             Err(_) => {
-                                eprintln!("had an issue getting the first char");
+                                eprintln!(
+                                    "{}: had an issue getting the first char",
+                                    Local::now().format("%Y-%m-%d %H:%M:%S")
+                                );
                                 return Ok(());
                             }
                         };
                         {
-                            let mut shared_ble_command_write_guard =
-                                shared_ble_command_write_clone.lock().await;
-                            *shared_ble_command_write_guard =
-                                SharedBLECommand::Reboot { node_count: target };
+                            let mut shared_ble_command_guard =
+                                shared_ble_command_clone.lock().await;
+                            *shared_ble_command_guard =
+                                SharedBLECommand::Restart { node_count: target };
                         }
                         Ok(())
                     }
@@ -128,11 +135,12 @@ pub fn hub_reboot_service(
 pub fn generic_read_write_service(
     service_uuid: Uuid,
     char_uuid: Uuid,
-    shared_ble_command: Arc<Mutex<SharedBLECommand>>,
+    shared_ble_read: Arc<Mutex<SharedBLERead>>,
+    shared_ble_write: Arc<Mutex<SharedBLEWrite>>,
     primary: bool,
 ) -> Service {
-    let shared_ble_command_read = Arc::clone(&shared_ble_command);
-    let shared_ble_command_write = Arc::clone(&shared_ble_command);
+    let shared_ble_read = Arc::clone(&shared_ble_read);
+    let shared_ble_write = Arc::clone(&shared_ble_write);
     Service {
         uuid: service_uuid,
         primary,
@@ -141,21 +149,19 @@ pub fn generic_read_write_service(
             read: Some(CharacteristicRead {
                 read: true,
                 fun: Box::new(move |_req| {
-                    let shared_ble_command_read_clone = shared_ble_command_read.clone();
+                    let shared_ble_read_clone = shared_ble_read.clone();
                     async move {
                         loop {
-                            let mut shared_ble_command_read_guard =
-                                shared_ble_command_read_clone.lock().await;
-                            if *shared_ble_command_read_guard == SharedBLECommand::NoUpdate {
-                                *shared_ble_command_read_guard = SharedBLECommand::TargetInquiry {
+                            let mut shared_ble_read_guard = shared_ble_read_clone.lock().await;
+                            if *shared_ble_read_guard == SharedBLERead::NoUpdate {
+                                *shared_ble_read_guard = SharedBLERead::Inquiry {
                                     device_uuid: service_uuid,
                                 };
                                 break;
                             }
                             sleep(Duration::from_millis(3)).await;
                         }
-                        let response =
-                            await_for_inquiry_response(shared_ble_command_read_clone).await;
+                        let response = await_for_read_response(shared_ble_read_clone).await;
                         println!("BLE response: {}", &response);
                         Ok(response.to_string().as_bytes().to_vec())
                     }
@@ -167,7 +173,8 @@ pub fn generic_read_write_service(
                 write: true,
                 write_without_response: true,
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
-                    let shared_ble_command_write_clone = shared_ble_command_write.clone();
+                    let shared_ble_write_clone = shared_ble_write.clone();
+                    let mut response = "".to_string();
                     async move {
                         let text = std::str::from_utf8(&new_value);
                         match std::str::from_utf8(&new_value) {
@@ -177,37 +184,44 @@ pub fn generic_read_write_service(
                                         Ok(t) => Some(t),
                                         Err(e) => {
                                             eprintln!(
-                                                "Bad CharicteristicWrite text received: {}",
+                                                "{}: Bad CharicteristicWrite text received: {}",
+                                                Local::now().format("%Y-%m-%d %H:%M:%S"),
                                                 e
                                             );
                                             return Ok(());
                                         }
                                     };
                                 loop {
-                                    let mut shared_ble_command_write_guard =
-                                        shared_ble_command_write_clone.lock().await;
-                                    if *shared_ble_command_write_guard == SharedBLECommand::NoUpdate
-                                    {
+                                    let mut shared_ble_write_guard =
+                                        shared_ble_write_clone.lock().await;
+                                    if *shared_ble_write_guard == SharedBLEWrite::NoUpdate {
                                         let action =
                                             match Action::from_u128(char_uuid.as_u128(), target) {
                                                 Ok(a) => a,
                                                 Err(_) => break,
                                             };
-                                        *shared_ble_command_write_guard =
-                                            SharedBLECommand::Command {
-                                                device_uuid: service_uuid,
-                                                action,
-                                            };
+                                        *shared_ble_write_guard = SharedBLEWrite::Command {
+                                            device_uuid: service_uuid,
+                                            action,
+                                        };
                                         break;
                                     }
                                     sleep(Duration::from_millis(3)).await;
                                 }
+                                let response =
+                                    await_for_write_response(shared_ble_write_clone).await;
+                                println!("BLE response: {}", &response);
                             }
                             Err(e) => {
-                                eprintln!("Bad CharicteristicWrite value received: {}", e);
+                                eprintln!(
+                                    "{}: Bad CharicteristicWrite value received: {}",
+                                    Local::now().format("%Y-%m-%d %H:%M:%S"),
+                                    e
+                                );
                             }
                         }
                         Ok(())
+                        //Ok(response.to_string().as_bytes().to_vec())
                     }
                     .boxed()
                 })),
@@ -221,7 +235,7 @@ pub fn generic_read_write_service(
 
 pub fn voice_service(
     service_uuid: Uuid,
-    shared_ble_command: Arc<Mutex<SharedBLECommand>>,
+    shared_ble_write: Arc<Mutex<SharedBLEWrite>>,
     devices: Vec<Device>,
 ) -> Service {
     let set_uuid: Uuid = Action::Set(0).to_uuid();
@@ -235,7 +249,7 @@ pub fn voice_service(
                 write_without_response: true,
                 method: CharacteristicWriteMethod::Fun(Box::new(move |new_value, _req| {
                     println!("voice received");
-                    let shared_ble_command_clone = shared_ble_command.clone();
+                    let shared_ble_write_clone = shared_ble_write.clone();
                     let device_ids = devices
                         .iter()
                         .map(|d| (d.name.clone(), d.uuid.clone()))
@@ -248,7 +262,11 @@ pub fn voice_service(
                         let command = match std::str::from_utf8(&new_value) {
                             Ok(t) => t.to_lowercase(),
                             Err(e) => {
-                                eprintln!("Bad voice command received: {}", e);
+                                eprintln!(
+                                    "{}: Bad voice command received: {}",
+                                    Local::now().format("%Y-%m-%d %H:%M:%S"),
+                                    e
+                                );
                                 return Ok(());
                             }
                         };
@@ -268,7 +286,10 @@ pub fn voice_service(
                             device_id = get_device_ids(device_ids, &mut command_iter);
                         }
                         if device_id.is_none() {
-                            eprintln!("Bad device name given");
+                            eprintln!(
+                                "{}: Bad device name given",
+                                Local::now().format("%Y-%m-%d %H:%M:%S")
+                            );
                             return Ok(());
                         }
                         let (_name, uuid) = device_id.expect("Already exited if not Some");
@@ -327,10 +348,9 @@ pub fn voice_service(
                             Err(_) => return Ok(()),
                         };
                         loop {
-                            let mut shared_ble_command_guard =
-                                shared_ble_command_clone.lock().await;
-                            if *shared_ble_command_guard == SharedBLECommand::NoUpdate {
-                                *shared_ble_command_guard = SharedBLECommand::Command {
+                            let mut shared_ble_write_guard = shared_ble_write_clone.lock().await;
+                            if *shared_ble_write_guard == SharedBLEWrite::NoUpdate {
+                                *shared_ble_write_guard = SharedBLEWrite::Command {
                                     device_uuid: uuid,
                                     action: action.clone(),
                                 };
@@ -350,15 +370,30 @@ pub fn voice_service(
     }
 }
 
-async fn await_for_inquiry_response(shared_ble_action: Arc<Mutex<SharedBLECommand>>) -> usize {
-    //println!("Waiting???????????");
+async fn await_for_read_response(shared_ble_action: Arc<Mutex<SharedBLERead>>) -> usize {
     loop {
         {
             let mut lock = shared_ble_action.lock().await;
             match &*lock {
-                SharedBLECommand::TargetResponse { ref target } => {
+                SharedBLERead::Response { ref target } => {
                     let thing = target.clone();
-                    *lock = SharedBLECommand::NoUpdate;
+                    *lock = SharedBLERead::NoUpdate;
+                    return thing;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+async fn await_for_write_response(shared_ble_action: Arc<Mutex<SharedBLEWrite>>) -> u16 {
+    loop {
+        {
+            let mut lock = shared_ble_action.lock().await;
+            match &*lock {
+                SharedBLEWrite::Response { ref message } => {
+                    let thing = message.clone();
+                    *lock = SharedBLEWrite::NoUpdate;
                     return thing;
                 }
                 _ => {}
